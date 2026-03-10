@@ -1,0 +1,59 @@
+{
+    "ocr": {
+        "region": null,
+        "interval": 0.4,
+        "language": "tur",
+        "tesseract_path": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+    },
+    "tts": {
+        "model": "tts_models/multilingual/multi-dataset/xtts_v2",
+        "local_model_dir": null,
+        "language": "tr",
+        "speed": 1.0,
+        "speaker_wav": null
+    },
+    "rvc": {
+        "model_path": null,
+        "index_path": null,
+        "pitch": 0,
+        "filter_radius": 3,
+        "index_rate": 0.75,
+        "rms_mix_rate": 0.25,
+        "protect": 0.33,
+        "f0_method": "rmvpe",
+        "realtime_mode": true
+    },
+    "translate": {
+        "enabled": false,
+        "source_lang": "eng",
+        "model": "Helsinki-NLP/opus-mt-en-tr"
+    },
+    "sentiment": {
+        "enabled": false,
+        "model": "j-hartmann/emotion-english-distilroberta-base",
+        "context_window": 5
+    },
+    "ducking": {
+        "enabled": false,
+        "level": 0.35,
+        "target_process": ""
+    },
+    "audio": {
+        "output_device": null,
+        "sample_rate": 40000
+    },
+    "ui": {
+        "theme": "dark",
+        "color_theme": "blue",
+        "window_width": 1100,
+        "window_height": 720
+    },
+    "pipeline": {
+        "enabled": false,
+        "last_subtitle": ""
+    },
+    "characters": {},
+    "character_refs": {},
+    "presets": {},
+    "active_preset": null
+}

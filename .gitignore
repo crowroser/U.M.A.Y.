@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Sanal ortam
+venv/
+.venv/
+env/
+.env/
+
+# Kullanıcı ayarları (yol ve cihaza özgü)
+config.json
+
+# Çıktılar ve geçici dosyalar
+output/
+*.wav
+*.mp3
+
+# Model dosyaları (büyük boyut)
+models/*.pth
+models/*.index
+models/tts/
+# Referans WAV'lar hariç tutulabilir; örnek referans istersen models/refs/ altına .gitkeep koy
+# models/refs/*.wav
+
+# Hugging Face önbellek
+.cache/
+huggingface/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# İşletim sistemi
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Test dosyaları
+test_write_access.txt
+*.log
