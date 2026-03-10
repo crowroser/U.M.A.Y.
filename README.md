@@ -210,45 +210,5 @@ python main.py
 
 ---
 
-## GitHub'a Yükleme
+umayyazilim.com
 
-Projeyi GitHub'a yüklemek için şu komutları kullanın:
-
-```bash
-# 1. Git deposunu başlat
-git init
-
-# 2. Tüm dosyaları staging'e ekle (.gitignore'daki dosyalar hariç)
-git add .
-
-# 3. İlk commit
-git commit -m "İlk commit: U.M.A.Y - Unified Model-based Audio Yield"
-
-# 4. GitHub'da yeni bir boş repo oluşturduktan sonra (örn: https://github.com/KULLANICI_ADINIZ/U.M.A.Y)
-#    Uzak depoyu ekle
-git remote add origin https://github.com/KULLANICI_ADINIZ/U.M.A.Y.git
-
-# 5. Ana dalı 'main' olarak ayarla (GitHub varsayılanı)
-git branch -M main
-
-# 6. GitHub'a push et
-git push -u origin main
-```
-
-> **Not:** `KULLANICI_ADINIZ` kısmını kendi GitHub kullanıcı adınızla değiştirin. SSH kullanıyorsanız URL yerine `git@github.com:KULLANICI_ADINIZ/U.M.A.Y.git` yazabilirsiniz.
-
----
-
-## Lisans
-
-Bu proje açık kaynak olarak paylaşılmaktadır. Kullanım ve değişiklik yapmak serbesttir.
-
----
-
-## Katkıda Bulunma
-
-1. Fork edin
-2. Feature branch oluşturun (`git checkout -b feature/yeni-ozellik`)
-3. Değişikliklerinizi commit edin (`git commit -m 'Yeni özellik eklendi'`)
-4. Branch'i push edin (`git push origin feature/yeni-ozellik`)
-5. Pull Request açın
