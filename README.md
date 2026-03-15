@@ -127,8 +127,8 @@ U.M.A.Y/
 ### 1. Depoyu klonlayın
 
 ```bash
-git clone https://github.com/crowroser/U.M.A.Y..git
-cd U.M.A.Y.
+git clone https://github.com/crowroser/U.M.A.Y..git umay
+cd umay
 ```
 
 ### 2. Sanal ortam oluşturun (önerilir)
@@ -142,7 +142,7 @@ venv\Scripts\activate    # Windows
 ### 3. Bağımlılıkları yükleyin
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu126
 ```
 
 ### 4. Tesseract OCR kurulumu
