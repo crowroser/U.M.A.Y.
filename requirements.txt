@@ -15,9 +15,9 @@ keyboard>=0.13.5
 pycaw>=20251023
 
 # Deep Learning / GPU
-torch==2.10.0+cu126
-torchvision==0.15.2+cu126
-torchaudio==2.1.1+cu126
+torch
+torchvision
+torchaudio
 transformers==5.3.0
 huggingface_hub>=1.7.1
 sentencepiece>=0.1.99
