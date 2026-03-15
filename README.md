@@ -128,7 +128,7 @@ U.M.A.Y/
 
 ```bash
 git clone https://github.com/crowroser/U.M.A.Y..git
-cd U.M.A.Y
+cd U.M.A.Y.
 ```
 
 ### 2. Sanal ortam oluşturun (önerilir)
