@@ -182,7 +182,7 @@ class SettingsPanel(ctk.CTkFrame):
         self._src_lang.set("eng")
         self._src_lang.pack(fill="x", padx=8, pady=(0, 8))
         ctk.CTkLabel(tab, text="Model (HuggingFace):").pack(anchor="w", padx=8)
-        self._translate_model = ctk.CTkEntry(tab, placeholder_text="Helsinki-NLP/opus-mt-en-tr")
+        self._translate_model = ctk.CTkEntry(tab, placeholder_text="Helsinki-NLP/opus-mt-tc-big-en-tr")
         self._translate_model.pack(fill="x", padx=8, pady=(0, 8))
         ctk.CTkLabel(
             tab, text="Ilk etkinlestirmede yuklenir (~300 MB).",
@@ -299,7 +299,7 @@ class SettingsPanel(ctk.CTkFrame):
             "translate": {
                 "enabled": self._translate_enabled.get(),
                 "source_lang": self._src_lang.get(),
-                "model": self._translate_model.get().strip() or "Helsinki-NLP/opus-mt-en-tr",
+                "model": self._translate_model.get().strip() or "Helsinki-NLP/opus-mt-tc-big-en-tr",
             },
             "sentiment": {
                 "enabled": self._sentiment_enabled.get(),

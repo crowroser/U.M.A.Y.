@@ -356,14 +356,21 @@ class UMAYApp(ctk.CTk):
             preprocess=True,
         )
 
-        self._tts = get_tts(self._config, on_status=lambda m: self._log(f"[TTS] {m}", "tts"))
-        self._rvc = get_rvc(self._config, on_status=lambda m: self._log(f"[RVC] {m}", "rvc"))
+        def _on_status(tag: str, prefix: str):
+            def _cb(m: str):
+                self._log(f"[{prefix}] {m}", tag)
+                if "%" in m and "/" in m:
+                    self._set_status(m)
+            return _cb
+
+        self._tts = get_tts(self._config, on_status=_on_status("tts", "TTS"))
+        self._rvc = get_rvc(self._config, on_status=_on_status("rvc", "RVC"))
         self._rvc.preload_all()
         self._translator = get_translator(
-            self._config, on_status=lambda m: self._log(f"[CEV] {m}", "tts")
+            self._config, on_status=_on_status("tts", "CEV")
         )
         self._analyzer = get_analyzer(
-            self._config, on_status=lambda m: self._log(f"[DUYGU] {m}", "info")
+            self._config, on_status=_on_status("info", "DUYGU")
         )
 
         self._ducker = AudioDucker(
@@ -645,9 +652,9 @@ class UMAYApp(ctk.CTk):
         """Preset verisini mevcut oturuma uygular."""
         region = data.get("region")
         if region:
-            self._on_region_selected(tuple(region))
+            self._on_region_selected(tuple(region), from_selector=False)
         else:
-            self._on_region_selected(None)
+            self._on_region_selected(None, from_selector=False)
 
         chars = data.get("characters", {})
         self._config["characters"] = chars
@@ -698,14 +705,49 @@ class UMAYApp(ctk.CTk):
         from src.ui.region_selector import RegionSelector
         RegionSelector(self, callback=self._on_region_selected)
 
-    def _on_region_selected(self, region: Optional[tuple]):
+    def _scale_region_for_mss(self, region: tuple) -> tuple:
+        """
+        Tkinter (mantıksal piksel) koordinatlarını mss (fiziksel piksel) koordinatlarına
+        dönüştürür. Windows DPI ölçeklemesinde tkinter ile mss arasındaki uyuşmazlığı giderir.
+        """
+        if not self._capture or not region:
+            return region
+        try:
+            monitors = self._capture._sct.monitors
+            if len(monitors) < 2:
+                return region
+            mon = monitors[1]  # primary monitor
+            tk_w = self.winfo_screenwidth()
+            tk_h = self.winfo_screenheight()
+            if tk_w <= 0 or tk_h <= 0:
+                return region
+            mss_w = mon["width"]
+            mss_h = mon["height"]
+            scale_x = mss_w / tk_w
+            scale_y = mss_h / tk_h
+            if abs(scale_x - 1.0) < 0.01 and abs(scale_y - 1.0) < 0.01:
+                return region
+            x1, y1, w, h = region
+            return (
+                int(mon["left"] + x1 * scale_x),
+                int(mon["top"] + y1 * scale_y),
+                int(w * scale_x),
+                int(h * scale_y),
+            )
+        except Exception:
+            return region
+
+    def _on_region_selected(self, region: Optional[tuple], from_selector: bool = True):
         if region:
-            self._region = region
-            l, t, w, h = region
+            # Sadece RegionSelector'dan gelen tkinter koordinatlarını mss'e dönüştür;
+            # config/preset'ten gelenler zaten mss formatında
+            mss_region = self._scale_region_for_mss(region) if from_selector else region
+            self._region = mss_region
+            l, t, w, h = mss_region
             self._region_label.configure(text=f"Bölge: {w}×{h} @ ({l},{t})")
             if self._capture:
-                self._capture.set_region_from_tuple(region)
-            self._config.setdefault("ocr", {})["region"] = list(region)
+                self._capture.set_region_from_tuple(mss_region)
+            self._config.setdefault("ocr", {})["region"] = list(mss_region)
         else:
             self._region = None
             self._region_label.configure(text="Bölge: Tam Ekran")

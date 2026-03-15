@@ -18,6 +18,21 @@ MODELS_DIR = Path(__file__).parent.parent.parent / "models"
 OUTPUT_DIR = Path(__file__).parent.parent.parent / "output"
 RVC_OUTPUT_PATH = OUTPUT_DIR / "rvc_output.wav"
 
+
+def _detect_model_version(pth: str) -> str:
+    """enc_p.emb_phone.weight boyutuna bakarak model versiyonunu (v1/v2) tespit eder."""
+    try:
+        import torch
+        cpt = torch.load(pth, map_location="cpu", weights_only=False)
+        state = cpt.get("weight", cpt)
+        if isinstance(state, dict):
+            emb = state.get("enc_p.emb_phone.weight")
+            if emb is not None:
+                return "v2" if emb.shape[1] == 768 else "v1"
+    except Exception:
+        pass
+    return "v2"
+
 _instance: Optional["RVCConverter"] = None
 _instance_lock = threading.Lock()
 
@@ -156,8 +171,10 @@ class RVCConverter:
             try:
                 self._notify(f"RVC yukleniyor: {Path(pth).name}")
                 from rvc_python.infer import RVCInference
+                version = _detect_model_version(pth)
+                self._notify(f"RVC model versiyonu: {version}")
                 rvc = RVCInference(device=self._device)
-                rvc.load_model(pth, index or "")
+                rvc.load_model(pth, version=version, index_path=index or "")
                 self._model_cache[pth] = rvc
                 self._notify(f"RVC hazir: {Path(pth).name}")
                 return rvc
@@ -238,15 +255,17 @@ class RVCConverter:
                 self._notify(
                     f"RVC [{character or 'varsayilan'}] f0={f0} pitch={effective_pitch}..."
                 )
-                rvc_obj.infer_file(
-                    input_path=input_wav,
-                    output_path=out,
-                    f0_up_key=effective_pitch,
+                rvc_obj.set_params(
+                    f0up_key=effective_pitch,
                     filter_radius=self.filter_radius,
                     index_rate=self.index_rate,
                     rms_mix_rate=self.rms_mix_rate,
                     protect=self.protect,
-                    f0_method=f0,
+                    f0method=f0,
+                )
+                rvc_obj.infer_file(
+                    input_path=input_wav,
+                    output_path=out,
                 )
                 return out
             except Exception as e:

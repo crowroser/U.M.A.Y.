@@ -28,11 +28,11 @@ def get_translator(
 
 class Translator:
     """
-    Helsinki-NLP/opus-mt-en-tr modeli ile Ingilizce → Turkce ceviri.
+    Helsinki-NLP/opus-mt-tc-big-en-tr modeli ile Ingilizce → Turkce ceviri.
     enabled=False ise ceviri atlanir, girdi aynen doner.
     """
 
-    DEFAULT_MODEL = "Helsinki-NLP/opus-mt-en-tr"
+    DEFAULT_MODEL = "Helsinki-NLP/opus-mt-tc-big-en-tr"
 
     def __init__(
         self,
@@ -71,10 +71,29 @@ class Translator:
             try:
                 self._notify(f"Opus-MT yukleniyor: {self.model_name}")
                 from transformers import MarianMTModel, MarianTokenizer
-                self._tokenizer = MarianTokenizer.from_pretrained(self.model_name)
-                self._model = MarianMTModel.from_pretrained(self.model_name)
-                if self._device == "cuda":
-                    self._model = self._model.to("cuda")
+                from src.utils.download_progress import download_progress_context
+
+                def _do_load(force_download: bool = False):
+                    with download_progress_context(self._notify):
+                        self._tokenizer = MarianTokenizer.from_pretrained(
+                            self.model_name, force_download=force_download
+                        )
+                        self._model = MarianMTModel.from_pretrained(
+                            self.model_name, force_download=force_download
+                        )
+                    if self._device == "cuda":
+                        self._model = self._model.to("cuda")
+
+                try:
+                    _do_load(force_download=False)
+                except (OSError, ImportError) as e:
+                    err_msg = str(e).lower()
+                    if any(x in err_msg for x in ("vocabulary", "source.spm", "not found", "no such file")):
+                        self._notify("Onbellek bozuk, yeniden indiriliyor...")
+                        _do_load(force_download=True)
+                    else:
+                        raise
+
                 self._loaded = True
                 self._notify("Ceviri modeli hazir.")
                 return True

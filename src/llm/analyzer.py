@@ -89,12 +89,15 @@ class SentimentAnalyzer:
             try:
                 self._notify(f"Duygu modeli yukleniyor: {self.model_name}")
                 from transformers import pipeline
-                self._pipe = pipeline(
-                    "text-classification",
-                    model=self.model_name,
-                    top_k=1,
-                    device=self._device,
-                )
+                from src.utils.download_progress import download_progress_context
+
+                with download_progress_context(self._notify):
+                    self._pipe = pipeline(
+                        "text-classification",
+                        model=self.model_name,
+                        top_k=1,
+                        device=self._device,
+                    )
                 self._loaded = True
                 self._notify("Duygu modeli hazir.")
                 return True

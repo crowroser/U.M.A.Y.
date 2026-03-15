@@ -39,7 +39,7 @@ DEFAULT_CONFIG = {
     "translate": {
         "enabled": False,
         "source_lang": "eng",
-        "model": "Helsinki-NLP/opus-mt-en-tr",
+        "model": "Helsinki-NLP/opus-mt-tc-big-en-tr",
     },
     "sentiment": {
         "enabled": False,

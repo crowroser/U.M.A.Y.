@@ -22,7 +22,9 @@ class RegionSelector(tk.Toplevel):
         self._coord_id: Optional[int] = None
 
         self.overrideredirect(True)
-        self.attributes("-fullscreen", True)
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        self.geometry(f"{sw}x{sh}+0+0")
         self.attributes("-alpha", 0.30)
         self.configure(bg="black")
         self.lift()
@@ -36,7 +38,6 @@ class RegionSelector(tk.Toplevel):
         )
         self._canvas.pack(fill="both", expand=True)
 
-        sw = self.winfo_screenwidth()
         self._canvas.create_rectangle(
             0, 0, sw, 40,
             fill=self.HINT_BG,

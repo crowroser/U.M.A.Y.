@@ -104,6 +104,13 @@ class TTSGenerator:
             if self._loaded:
                 return True
             try:
+                import torch
+                _orig_torch_load = torch.load
+                def _patched_torch_load(*args, **kwargs):
+                    kwargs.setdefault("weights_only", False)
+                    return _orig_torch_load(*args, **kwargs)
+                torch.load = _patched_torch_load
+
                 from TTS.api import TTS
 
                 if self.local_model_dir:
@@ -122,8 +129,8 @@ class TTSGenerator:
                 self._loaded = True
                 self._notify("TTS hazir.")
                 return True
-            except ImportError:
-                self._notify("HATA: TTS paketi bulunamadi. pip install TTS")
+            except ImportError as e:
+                self._notify(f"HATA: TTS import basarisiz: {e}")
                 return False
             except Exception as e:
                 self._notify(f"TTS yukleme hatasi: {e}")

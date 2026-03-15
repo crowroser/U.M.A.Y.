@@ -122,15 +122,20 @@ class HFDownloader(ctk.CTkToplevel):
         def _run():
             try:
                 from huggingface_hub import snapshot_download
+                from src.utils.download_progress import download_progress_context
 
                 dest = MODELS_TTS_DIR / _sanitize(repo_id)
                 dest.mkdir(parents=True, exist_ok=True)
 
-                local_dir = snapshot_download(
-                    repo_id=repo_id,
-                    local_dir=str(dest),
-                    ignore_patterns=["*.msgpack", "*.h5", "flax_model*"],
-                )
+                def _on_progress(msg: str):
+                    self.after(0, lambda: self._log_write(msg))
+
+                with download_progress_context(_on_progress):
+                    local_dir = snapshot_download(
+                        repo_id=repo_id,
+                        local_dir=str(dest),
+                        ignore_patterns=["*.msgpack", "*.h5", "flax_model*"],
+                    )
                 self._log_write(f"Tamamlandi: {local_dir}")
 
                 self.after(0, self._progress_bar.stop)
