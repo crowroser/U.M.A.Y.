@@ -127,7 +127,7 @@ U.M.A.Y/
 ### 1. Depoyu klonlayın
 
 ```bash
-git clone https://github.com/KULLANICI_ADINIZ/U.M.A.Y.git
+git clone https://github.com/crowroser/U.M.A.Y..git
 cd U.M.A.Y
 ```
 
