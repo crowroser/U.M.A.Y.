@@ -322,21 +322,26 @@ class SettingsPanel(ctk.CTkFrame):
         dk   = config.get("ducking", {})
 
         if ocr.get("tesseract_path"):
+            self._tess_path.delete(0, "end")
             self._tess_path.insert(0, ocr["tesseract_path"])
         if ocr.get("language"):
+            self._ocr_lang.delete(0, "end")
             self._ocr_lang.insert(0, ocr["language"])
         if ocr.get("interval"):
             self._ocr_interval.set(ocr["interval"])
             self._interval_label.configure(text=f"{ocr['interval']:.1f} sn")
 
         if tts.get("language"):
+            self._tts_lang.delete(0, "end")
             self._tts_lang.insert(0, tts["language"])
         if tts.get("speed"):
             self._tts_speed.set(tts["speed"])
             self._speed_label.configure(text=f"{tts['speed']:.1f}x")
         if tts.get("speaker_wav"):
+            self._speaker_wav.delete(0, "end")
             self._speaker_wav.insert(0, tts["speaker_wav"])
         if tts.get("local_model_dir"):
+            self._local_model_dir.delete(0, "end")
             self._local_model_dir.insert(0, tts["local_model_dir"])
 
         if rvc.get("pitch") is not None:

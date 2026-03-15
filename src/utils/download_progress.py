@@ -83,21 +83,39 @@ def download_progress_context(callback: Callable[[str], None]):
     def _patch_class(cls):
         if cls is not None and not hasattr(cls, "tqdm"):
             try:
-                cls.tqdm = _base_tqdm
+                cls.tqdm = ProgressTqdm  # tqdm.tqdm(...) cagrilarinda da progress raporlansin
                 _patched_classes.append(cls)
             except (AttributeError, TypeError):
                 pass
 
     try:
-        import huggingface_hub.utils.tqdm as tqdm_mod
+        import sys
+        import importlib
+        import huggingface_hub.utils.tqdm  # modülün sys.modules'a yüklenmesini garantile
         import huggingface_hub.utils as utils_mod
         import huggingface_hub.file_download as fd_mod
         import huggingface_hub._snapshot_download as snap_mod
 
+        # huggingface_hub/utils/__init__.py tqdm CLASS'ını re-export ettiğinden
+        # doğrudan import CLASS döndürür; gerçek modülü sys.modules'dan alıyoruz.
+        tqdm_mod = sys.modules.get("huggingface_hub.utils.tqdm")
+        if tqdm_mod is None or not hasattr(tqdm_mod, "tqdm"):
+            tqdm_mod = importlib.import_module("huggingface_hub.utils.tqdm")
+
         orig_tqdm = tqdm_mod.tqdm
 
-        # Orijinal hf_tqdm sinifina .tqdm ekle (module-level import'lari icin)
+        # tqdm.tqdm(...) kullanan paketler icin: sinifa .tqdm ekle
         _patch_class(orig_tqdm)
+        try:
+            import tqdm.auto as tqdm_auto_mod
+            _patch_class(getattr(tqdm_auto_mod, "tqdm", None))
+        except ImportError:
+            pass
+        try:
+            import tqdm.std as tqdm_std_mod
+            _patch_class(getattr(tqdm_std_mod, "tqdm", None))
+        except ImportError:
+            pass
 
         tqdm_mod.tqdm = utils_mod.tqdm = ProgressTqdm
         if hasattr(fd_mod, "tqdm"):

@@ -119,6 +119,12 @@ class UMAYApp(ctk.CTk):
         ).pack(side="right", padx=(8, 0))
 
         ctk.CTkButton(
+            btn_frame, text="Test Yakala", width=110,
+            fg_color=("#6d3d91", "#8e44ad"), hover_color=("#522d6e", "#7d3c98"),
+            command=self._test_capture,
+        ).pack(side="right", padx=(8, 0))
+
+        ctk.CTkButton(
             btn_frame, text="Bölge Seç", width=100,
             fg_color=("#2d7d46", "#27ae60"), hover_color=("#235f36", "#1e8449"),
             command=self._select_region,
@@ -392,6 +398,7 @@ class UMAYApp(ctk.CTk):
             capture=self._capture,
             on_new_subtitle=self._on_subtitle_detected,
             interval=ocr_cfg.get("interval", 0.4),
+            on_log=self._log,
         )
 
         self._tts.load_async(on_done=lambda ok: self.after(0, lambda: self._on_tts_ready(ok)))
@@ -625,6 +632,17 @@ class UMAYApp(ctk.CTk):
         self._runner.start()
         self._monitor.start()
         self._log("Pipeline başlatıldı.", "info")
+        if not self._region:
+            self._log(
+                "[UYARI] Bölge seçilmedi — tam ekran taranıyor. "
+                "Altyazı bölgesini seçmek OCR doğruluğunu artırır.",
+                "error",
+            )
+        self._log(
+            f"[OCR] Dil: {self._config.get('ocr', {}).get('language', 'tur')}  "
+            f"Aralık: {self._config.get('ocr', {}).get('interval', 0.4)}s",
+            "info",
+        )
         self._set_status("Pipeline çalışıyor…")
 
     def _stop_pipeline(self):
@@ -698,6 +716,57 @@ class UMAYApp(ctk.CTk):
         self._char_rows.clear()
         for name, pth in chars.items():
             self._add_char_row(name, pth)
+
+    # ─────────────────── Test Yakalama ───────────────────────────────
+
+    def _test_capture(self):
+        """
+        Mevcut bölgeden ekran görüntüsü alır; ham ve işlenmiş görselleri
+        output/ klasörüne kaydeder, OCR sonucunu log'a yazar.
+        """
+        import threading as _t
+
+        def _run():
+            if not self._capture:
+                self._log("[TEST] Capture modülü henüz hazır değil.", "error")
+                return
+
+            self._log("[TEST] Ekran yakalanıyor…", "info")
+            from src.ocr.capture import preprocess_image
+            from pathlib import Path
+
+            out_dir = Path(__file__).parent.parent.parent / "output"
+            out_dir.mkdir(exist_ok=True)
+
+            img = self._capture.capture()
+            if img is None:
+                err = getattr(self._capture, "_last_capture_error", None)
+                self._log("[TEST] Ekran yakalanamadı.", "error")
+                if err:
+                    for line in err.strip().splitlines():
+                        self._log(f"[TEST] {line}", "error")
+                return
+
+            raw_path = out_dir / "debug_raw.png"
+            pre_path = out_dir / "debug_preprocessed.png"
+            img.save(str(raw_path))
+            self._log(f"[TEST] Ham görüntü kaydedildi: {raw_path}", "info")
+
+            pre = preprocess_image(img.copy())
+            pre.save(str(pre_path))
+            self._log(f"[TEST] İşlenmiş görüntü kaydedildi: {pre_path}", "info")
+
+            text = self._capture.extract_text(img)
+            if text:
+                self._log(f"[TEST] OCR sonucu: {text[:200].replace(chr(10), ' | ')}", "ocr")
+            else:
+                self._log(
+                    "[TEST] OCR hiç metin bulamadı. "
+                    "output/debug_raw.png ve debug_preprocessed.png dosyalarını inceleyin.",
+                    "error",
+                )
+
+        _t.Thread(target=_run, daemon=True).start()
 
     # ─────────────────── Bölge Seçimi ────────────────────────────────
 

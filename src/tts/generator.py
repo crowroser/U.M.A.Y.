@@ -63,6 +63,23 @@ class TTSGenerator:
     """
 
     MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
+    XTTS_LANGS = frozenset(
+        {"en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "hu", "ko", "ja", "hi"}
+    )
+
+    @staticmethod
+    def _normalize_lang(lang: str) -> str:
+        """Gecersiz/bozuk dil kodlarini XTTS destekli formata cevirir (trtr->tr vb.)."""
+        if not lang or not isinstance(lang, str):
+            return "tr"
+        s = lang.strip().lower()
+        if s in TTSGenerator.XTTS_LANGS:
+            return s
+        if s.startswith("tr"):  # trtr, tur -> tr
+            return "tr"
+        if s.startswith("en"):
+            return "en"
+        return "tr"
 
     def __init__(
         self,
@@ -72,7 +89,7 @@ class TTSGenerator:
         tts_cfg = config.get("tts", {})
         self.model_name: str = tts_cfg.get("model", self.MODEL_NAME)
         self.local_model_dir: Optional[str] = tts_cfg.get("local_model_dir")
-        self.language: str = tts_cfg.get("language", "tr")
+        self.language: str = self._normalize_lang(tts_cfg.get("language", "tr"))
         self.speed: float = float(tts_cfg.get("speed", 1.0))
         self.speaker_wav: Optional[str] = tts_cfg.get("speaker_wav")
         self._on_status = on_status or (lambda _: None)
@@ -255,7 +272,7 @@ class TTSGenerator:
         speaker_wav: Optional[str] = None,
     ):
         if language:
-            self.language = language
+            self.language = self._normalize_lang(language)
         if speed is not None:
             self.speed = max(0.5, min(2.0, speed))
         if speaker_wav is not None:
