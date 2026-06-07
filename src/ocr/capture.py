@@ -250,13 +250,37 @@ class ScreenCapture:
         tesseract_path: Optional[str] = None,
         language: str = "tur",
         preprocess: bool = True,
+        engine_type: str = "tesseract",
     ):
-        if tesseract_path:
-            pytesseract.pytesseract.tesseract_cmd = tesseract_path
         self.language = language
         self.preprocess = preprocess
+        self.engine_type = engine_type
         self.region: Optional[dict] = None
         self._last_capture_error: Optional[str] = None
+        self._tesseract_path = tesseract_path
+
+        from src.ocr.ocr_engine import OCREngineFactory
+        self._engine = OCREngineFactory.create_engine(
+            engine_type=self.engine_type,
+            language=self.language,
+            preprocess=self.preprocess,
+            tesseract_path=tesseract_path
+        )
+
+    def update_engine(self, engine_type: str, language: Optional[str] = None, tesseract_path: Optional[str] = None):
+        """Çalışma zamanında OCR motorunu günceller."""
+        from src.ocr.ocr_engine import OCREngineFactory
+        if language is not None:
+            self.language = language
+        if tesseract_path is not None:
+            self._tesseract_path = tesseract_path
+        self.engine_type = engine_type
+        self._engine = OCREngineFactory.create_engine(
+            engine_type=self.engine_type,
+            language=self.language,
+            preprocess=self.preprocess,
+            tesseract_path=self._tesseract_path
+        )
 
     @property
     def _sct(self):
@@ -284,20 +308,7 @@ class ScreenCapture:
             return None
 
     def extract_text(self, image: Image.Image) -> str:
-        if self.preprocess:
-            image = preprocess_image(image)
-        # PSM 6 (düzgün metin bloğu) ve PSM 11 (dağınık metin) sırayla dene;
-        # ilk sonuç veren kazanır
-        for psm in (6, 11, 3):
-            try:
-                result = pytesseract.image_to_string(
-                    image, lang=self.language, config=f"--oem 3 --psm {psm}"
-                ).strip()
-                if result:
-                    return result
-            except Exception:
-                pass
-        return ""
+        return self._engine.extract_text(image)
 
     def capture_and_extract(self) -> str:
         img = self.capture()
