@@ -28,6 +28,7 @@ import scipy.io.wavfile as wavfile
 from src.pipeline.sentence_splitter import split_sentences
 from src.pipeline.telemetry import PipelineTimer, PipelineStats
 from src.pipeline.tts_cache import TTSCache
+from src.pipeline.rvc_cache import RVCAudioCache
 
 OUTPUT_DIR = Path(__file__).parent.parent.parent / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -121,6 +122,9 @@ class QueueRunner:
         # TTS Cache
         self._cache = TTSCache(max_memory_mb=cache_mb)
 
+        # RVC Cache
+        self._rvc_cache = RVCAudioCache(max_memory_mb=200, enabled=True)
+
     # ── Public API ─────────────────────────────────────────────────────
 
     @property
@@ -130,6 +134,35 @@ class QueueRunner:
     @property
     def cache(self) -> TTSCache:
         return self._cache
+
+    def update_cache_settings(self, config: dict):
+        """Çalışma zamanında TTS ve RVC önbellek ayarlarını günceller."""
+        cache_cfg = config.get("cache", {})
+        
+        # TTS Cache güncelle
+        max_mem = cache_cfg.get("tts_max_memory_mb", 200)
+        disk_enabled = cache_cfg.get("tts_disk_enabled", False)
+        disk_limit = cache_cfg.get("tts_disk_limit_mb", 500)
+        
+        self._cache.update_settings(
+            max_memory_mb=max_mem,
+            disk_enabled=disk_enabled,
+            disk_limit_mb=disk_limit
+        )
+        
+        # RVC Cache güncelle
+        rvc_enabled = cache_cfg.get("rvc_enabled", True)
+        rvc_max_mem = cache_cfg.get("rvc_max_memory_mb", 200)
+        rvc_disk_enabled = cache_cfg.get("rvc_disk_enabled", False)
+        rvc_disk_limit = cache_cfg.get("rvc_disk_limit_mb", 500)
+        
+        if self._rvc_cache:
+            self._rvc_cache.update_settings(
+                enabled=rvc_enabled,
+                max_memory_mb=rvc_max_mem,
+                disk_enabled=rvc_disk_enabled,
+                disk_limit_mb=rvc_disk_limit
+            )
 
     def start(self):
         if self._running:
@@ -202,6 +235,8 @@ class QueueRunner:
         """Pipeline + cache istatistiklerini doner."""
         result = self._stats.get_stats()
         result["cache"] = self._cache.get_stats()
+        if self._rvc_cache:
+            result["rvc_cache"] = self._rvc_cache.get_stats()
         return result
 
     def get_stats_summary(self) -> str:
@@ -375,13 +410,25 @@ class QueueRunner:
         # ── RVC ──
         with timer.measure(f"{step_prefix}rvc"):
             if self._rvc:
-                rvc_result = self._rvc.convert_array(
-                    audio_data, sr,
-                    character=speaker,
-                    pitch_override_delta=pitch_delta,
-                )
-                if rvc_result:
-                    sr, audio_data = rvc_result
+                # RVC Cache lookup
+                cached_rvc = None
+                input_audio_data = audio_data.copy() if self._rvc_cache else None
+                if self._rvc_cache:
+                    cached_rvc = self._rvc_cache.get(audio_data, speaker, pitch_delta)
+                
+                if cached_rvc:
+                    sr, audio_data = cached_rvc
+                    self._log(f"[RVC CACHE HIT] Parca {chunk_idx+1}/{total_chunks} önbellekten yüklendi.", "rvc")
+                else:
+                    rvc_result = self._rvc.convert_array(
+                        audio_data, sr,
+                        character=speaker,
+                        pitch_override_delta=pitch_delta,
+                    )
+                    if rvc_result:
+                        sr, audio_data = rvc_result
+                        if self._rvc_cache:
+                            self._rvc_cache.put(input_audio_data, speaker, pitch_delta, sr, audio_data)
 
         rvc_ms = timer.get_durations().get(f"{step_prefix}rvc", 0)
         if self._rvc:

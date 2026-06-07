@@ -329,6 +329,15 @@ class SettingsPanel(ctk.CTkFrame):
 
     # ── Kaydet / Yukle ────────────────────────────────────────────────
 
+    def _get_int_setting(self, entry_widget, default: int) -> int:
+        val = entry_widget.get().strip()
+        if not val:
+            return default
+        try:
+            return int(val)
+        except ValueError:
+            return default
+
     def _save(self):
         self._on_save({
             "ocr": {
@@ -378,6 +387,13 @@ class SettingsPanel(ctk.CTkFrame):
                 "enabled": self._vram_enabled.get(),
                 "auto_detect": self._vram_auto.get(),
                 "budget_mb": float(self._vram_budget.get().strip()) if self._vram_budget.get().strip() else 3000.0,
+            },
+            "cache": {
+                "tts_disk_enabled": self._tts_disk_enabled.get(),
+                "tts_disk_limit_mb": self._get_int_setting(self._tts_disk_limit, 500),
+                "rvc_enabled": self._rvc_cache_enabled.get(),
+                "rvc_disk_enabled": self._rvc_disk_enabled.get(),
+                "rvc_disk_limit_mb": self._get_int_setting(self._rvc_disk_limit, 500),
             }
         })
 
@@ -399,6 +415,7 @@ class SettingsPanel(ctk.CTkFrame):
         sent = config.get("sentiment", {})
         dk   = config.get("ducking", {})
         vram = config.get("vram", {})
+        cache = config.get("cache", {})
 
         if ocr.get("engine_type"):
             self._ocr_engine.set(ocr["engine_type"])
@@ -487,19 +504,57 @@ class SettingsPanel(ctk.CTkFrame):
         self._vram_budget.insert(0, str(vram.get("budget_mb", 3000.0)))
         self._toggle_vram_auto()
 
+        # Cache ayarlarını yükle
+        self._tts_disk_enabled.set(cache.get("tts_disk_enabled", False))
+        self._tts_disk_limit.delete(0, "end")
+        self._tts_disk_limit.insert(0, str(cache.get("tts_disk_limit_mb", 500)))
+        self._rvc_cache_enabled.set(cache.get("rvc_enabled", True))
+        self._rvc_disk_enabled.set(cache.get("rvc_disk_enabled", False))
+        self._rvc_disk_limit.delete(0, "end")
+        self._rvc_disk_limit.insert(0, str(cache.get("rvc_disk_limit_mb", 500)))
+
     def _build_vram_tab(self):
         tab = self._notebook.tab("Bellek")
         
+        vram_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        vram_frame.pack(side="left", fill="both", expand=True, padx=8, pady=4)
+        
+        cache_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        cache_frame.pack(side="right", fill="both", expand=True, padx=8, pady=4)
+
+        # ── VRAM Yöneticisi ──
+        ctk.CTkLabel(vram_frame, text="VRAM Ayarları", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=4, pady=4)
+        
         self._vram_enabled = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(tab, text="VRAM Yönetimini Etkinleştir", variable=self._vram_enabled).pack(anchor="w", padx=12, pady=8)
+        ctk.CTkCheckBox(vram_frame, text="VRAM Yönetimini Etkinleştir", variable=self._vram_enabled).pack(anchor="w", padx=4, pady=4)
         
         self._vram_auto = ctk.BooleanVar(value=True)
-        self._vram_auto_cb = ctk.CTkCheckBox(tab, text="Limitleri Otomatik Tespit Et", variable=self._vram_auto, command=self._toggle_vram_auto)
-        self._vram_auto_cb.pack(anchor="w", padx=12, pady=8)
+        self._vram_auto_cb = ctk.CTkCheckBox(vram_frame, text="Limitleri Otomatik Tespit Et", variable=self._vram_auto, command=self._toggle_vram_auto)
+        self._vram_auto_cb.pack(anchor="w", padx=4, pady=4)
         
-        ctk.CTkLabel(tab, text="VRAM Bütçesi (MB):").pack(anchor="w", padx=12, pady=(12, 0))
-        self._vram_budget = ctk.CTkEntry(tab, placeholder_text="3000")
-        self._vram_budget.pack(fill="x", padx=12, pady=(2, 8))
+        ctk.CTkLabel(vram_frame, text="VRAM Bütçesi (MB):").pack(anchor="w", padx=4, pady=(4, 0))
+        self._vram_budget = ctk.CTkEntry(vram_frame, placeholder_text="3000")
+        self._vram_budget.pack(fill="x", padx=4, pady=(2, 4))
+
+        # ── Önbellek Ayarları ──
+        ctk.CTkLabel(cache_frame, text="Önbellek Ayarları", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=4, pady=4)
+        
+        self._tts_disk_enabled = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(cache_frame, text="TTS Disk Önbelleği Etkin", variable=self._tts_disk_enabled).pack(anchor="w", padx=4, pady=4)
+        
+        ctk.CTkLabel(cache_frame, text="TTS Disk Limiti (MB):").pack(anchor="w", padx=4, pady=(4, 0))
+        self._tts_disk_limit = ctk.CTkEntry(cache_frame, placeholder_text="500")
+        self._tts_disk_limit.pack(fill="x", padx=4, pady=(2, 4))
+        
+        self._rvc_cache_enabled = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(cache_frame, text="RVC Önbelleği Etkin", variable=self._rvc_cache_enabled).pack(anchor="w", padx=4, pady=4)
+
+        self._rvc_disk_enabled = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(cache_frame, text="RVC Disk Önbelleği Etkin", variable=self._rvc_disk_enabled).pack(anchor="w", padx=4, pady=4)
+
+        ctk.CTkLabel(cache_frame, text="RVC Disk Limiti (MB):").pack(anchor="w", padx=4, pady=(4, 0))
+        self._rvc_disk_limit = ctk.CTkEntry(cache_frame, placeholder_text="500")
+        self._rvc_disk_limit.pack(fill="x", padx=4, pady=(2, 4))
 
     def _toggle_vram_auto(self):
         if self._vram_auto.get():

@@ -125,6 +125,7 @@ class UMAYApp(ctk.CTk):
         self._right_panel.add("⚙ Ayarlar")
         self._right_panel.add("👤 Karakterler")
         self._right_panel.add("📊 Performans")
+        self._right_panel.add("⚡ Benchmark")
 
         self._settings_panel = SettingsPanel(
             self._right_panel.tab("⚙ Ayarlar"),
@@ -135,6 +136,7 @@ class UMAYApp(ctk.CTk):
 
         self._build_char_panel(self._right_panel.tab("👤 Karakterler"))
         self._build_perf_panel(self._right_panel.tab("📊 Performans"))
+        self._build_benchmark_panel(self._right_panel.tab("⚡ Benchmark"))
 
         self._build_header()
         self._build_preset_bar()
@@ -611,14 +613,28 @@ class UMAYApp(ctk.CTk):
                     )
 
         lines.append(f"\n═══ TTS Cache ═══\n")
-        lines.append(f"  Öğe Sayısı   : {cache_stats.get('entries', 0)}")
-        lines.append(f"  Bellek       : {cache_stats.get('memory_mb', 0)} / {cache_stats.get('max_memory_mb', 0)} MB")
+        lines.append(f"  RAM Öğe S.   : {cache_stats.get('entries', 0)}")
+        lines.append(f"  RAM Bellek   : {cache_stats.get('memory_mb', 0)} / {cache_stats.get('max_memory_mb', 0)} MB")
+        lines.append(f"  Disk Öğe S.  : {cache_stats.get('disk_entries', 0)}")
+        lines.append(f"  Disk Boyutu  : {cache_stats.get('disk_size_mb', 0)} / {cache_stats.get('max_disk_mb', 0)} MB")
         lines.append(f"  Hit          : {cache_stats.get('hits', 0)}")
         lines.append(f"  Miss         : {cache_stats.get('misses', 0)}")
         lines.append(f"  Hit Rate     : %{int(cache_stats.get('hit_rate', 0) * 100)}")
         lines.append(f"  Evictions    : {cache_stats.get('evictions', 0)}")
         saved = cache_stats.get("saved_ms", 0)
         lines.append(f"  Tasarruf     : {saved/1000:.1f}s")
+
+        rvc_stats = stats.get("rvc_cache", {})
+        if rvc_stats:
+            lines.append(f"\n═══ RVC Cache ═══\n")
+            lines.append(f"  RAM Öğe S.   : {rvc_stats.get('entries', 0)}")
+            lines.append(f"  RAM Bellek   : {rvc_stats.get('memory_mb', 0)} / {rvc_stats.get('max_memory_mb', 0)} MB")
+            lines.append(f"  Disk Öğe S.  : {rvc_stats.get('disk_entries', 0)}")
+            lines.append(f"  Disk Boyutu  : {rvc_stats.get('disk_size_mb', 0)} / {rvc_stats.get('max_disk_mb', 0)} MB")
+            lines.append(f"  Hit          : {rvc_stats.get('hits', 0)}")
+            lines.append(f"  Miss         : {rvc_stats.get('misses', 0)}")
+            lines.append(f"  Hit Rate     : %{int(rvc_stats.get('hit_rate', 0) * 100)}")
+            lines.append(f"  Evictions    : {rvc_stats.get('evictions', 0)}")
 
         text = "\n".join(lines)
         self._perf_info.configure(state="normal")
@@ -923,6 +939,10 @@ class UMAYApp(ctk.CTk):
             on_log=self._log,
             on_stats=self._update_timing_bar,
         )
+        self._runner.update_cache_settings(self._config)
+
+        from src.utils.benchmark import BenchmarkSuite
+        self._benchmark_suite = BenchmarkSuite(self)
 
         self._monitor = SubtitleMonitor(
             capture=self._capture,
@@ -1445,6 +1465,9 @@ class UMAYApp(ctk.CTk):
         from src.utils.vram_manager import VRAMManager
         VRAMManager.get_instance().configure(self._config)
 
+        if self._runner:
+            self._runner.update_cache_settings(self._config)
+
         self._save_config(self._config)
         self._apply_overlay_settings()
         self._refresh_indicators()
@@ -1528,3 +1551,216 @@ class UMAYApp(ctk.CTk):
                 fg_color=COLORS["accent_blue"],
                 hover_color="#4a90d9",
             )
+
+    # ── Benchmark Arayüzü ──────────────────────────────────────────────
+    
+    def _build_benchmark_panel(self, parent):
+        """Dahili Benchmark paneli."""
+        ctk.CTkLabel(
+            parent, text="Dahili Benchmark Sistemi",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=10, pady=(12, 6))
+        
+        # Butonlar grubu
+        btn_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=8, pady=4)
+        
+        # Grid layout for buttons
+        btn_frame.grid_columnconfigure(0, weight=1)
+        btn_frame.grid_columnconfigure(1, weight=1)
+        
+        self._btn_ocr_bench = ctk.CTkButton(
+            btn_frame, text="📸 OCR Testi",
+            fg_color=COLORS["bg_elevated"],
+            hover_color=COLORS["bg_card_hover"],
+            command=self._run_ocr_bench
+        )
+        self._btn_ocr_bench.grid(row=0, column=0, padx=2, pady=2, sticky="ew")
+        
+        self._btn_tts_bench = ctk.CTkButton(
+            btn_frame, text="🔊 TTS Testi",
+            fg_color=COLORS["bg_elevated"],
+            hover_color=COLORS["bg_card_hover"],
+            command=self._run_tts_bench
+        )
+        self._btn_tts_bench.grid(row=0, column=1, padx=2, pady=2, sticky="ew")
+        
+        self._btn_rvc_bench = ctk.CTkButton(
+            btn_frame, text="🎤 RVC Testi",
+            fg_color=COLORS["bg_elevated"],
+            hover_color=COLORS["bg_card_hover"],
+            command=self._run_rvc_bench
+        )
+        self._btn_rvc_bench.grid(row=1, column=0, padx=2, pady=2, sticky="ew")
+        
+        self._btn_all_bench = ctk.CTkButton(
+            btn_frame, text="⚡ Tümünü Çalıştır",
+            fg_color=COLORS["accent_orange"],
+            hover_color="#b5841c",
+            command=self._run_all_bench
+        )
+        self._btn_all_bench.grid(row=1, column=1, padx=2, pady=2, sticky="ew")
+        
+        # İlerleme Çubuğu ve Durum
+        self._bench_progress = ctk.CTkProgressBar(parent)
+        self._bench_progress.set(0.0)
+        self._bench_progress.pack(fill="x", padx=10, pady=(8, 2))
+        
+        self._bench_status_label = ctk.CTkLabel(
+            parent, text="Benchmark testi başlatılmaya hazır.",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_secondary"],
+            anchor="w"
+        )
+        self._bench_status_label.pack(fill="x", padx=10, pady=(0, 8))
+        
+        # Rapor kutusu
+        self._bench_report_box = ctk.CTkTextbox(
+            parent,
+            font=ctk.CTkFont(family="Cascadia Code,Consolas", size=11),
+            state="disabled",
+            fg_color=COLORS["bg_dark"],
+            corner_radius=8,
+            height=260
+        )
+        self._bench_report_box.pack(fill="both", expand=True, padx=8, pady=4)
+        
+        # Alt buton
+        self._copy_btn = ctk.CTkButton(
+            parent, text="📋 Panoya Kopyala",
+            fg_color=COLORS["accent_blue"],
+            hover_color="#4a90d9",
+            command=self._copy_bench_report
+        )
+        self._copy_btn.pack(fill="x", padx=8, pady=8)
+
+    def _toggle_bench_buttons(self, state: str):
+        self._btn_ocr_bench.configure(state=state)
+        self._btn_tts_bench.configure(state=state)
+        self._btn_rvc_bench.configure(state=state)
+        self._btn_all_bench.configure(state=state)
+
+    def _run_ocr_bench(self):
+        self._toggle_bench_buttons("disabled")
+        self._bench_progress.set(0.2)
+        self._bench_status_label.configure(text="OCR Testi çalıştırılıyor...", text_color=COLORS["accent_blue"])
+        
+        def _thread():
+            try:
+                res = self._benchmark_suite.run_ocr_benchmark()
+                from src.utils.benchmark import generate_markdown_report
+                report = {
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "ocr": res,
+                    "tts": {"error": "Bu test çalıştırılmadı."},
+                    "rvc": {"error": "Bu test çalıştırılmadı."}
+                }
+                md = generate_markdown_report(report)
+                self.after(0, lambda: self._show_bench_result(md, "OCR testi tamamlandı.", 1.0))
+            except Exception as e:
+                self.after(0, lambda: self._show_bench_error(f"OCR Benchmark hatası: {e}"))
+                
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def _run_tts_bench(self):
+        self._toggle_bench_buttons("disabled")
+        self._bench_progress.set(0.2)
+        self._bench_status_label.configure(text="TTS Sentez Testi çalıştırılıyor...", text_color=COLORS["accent_blue"])
+        
+        def _thread():
+            try:
+                res = self._benchmark_suite.run_tts_benchmark()
+                from src.utils.benchmark import generate_markdown_report
+                report = {
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "ocr": {"error": "Bu test çalıştırılmadı."},
+                    "tts": res,
+                    "rvc": {"error": "Bu test çalıştırılmadı."}
+                }
+                md = generate_markdown_report(report)
+                self.after(0, lambda: self._show_bench_result(md, "TTS testi tamamlandı.", 1.0))
+            except Exception as e:
+                self.after(0, lambda: self._show_bench_error(f"TTS Benchmark hatası: {e}"))
+                
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def _run_rvc_bench(self):
+        self._toggle_bench_buttons("disabled")
+        self._bench_progress.set(0.2)
+        self._bench_status_label.configure(text="RVC Ses Dönüşüm Testi çalıştırılıyor...", text_color=COLORS["accent_blue"])
+        
+        def _thread():
+            try:
+                res = self._benchmark_suite.run_rvc_benchmark()
+                from src.utils.benchmark import generate_markdown_report
+                report = {
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "ocr": {"error": "Bu test çalıştırılmadı."},
+                    "tts": {"error": "Bu test çalıştırılmadı."},
+                    "rvc": res
+                }
+                md = generate_markdown_report(report)
+                self.after(0, lambda: self._show_bench_result(md, "RVC testi tamamlandı.", 1.0))
+            except Exception as e:
+                self.after(0, lambda: self._show_bench_error(f"RVC Benchmark hatası: {e}"))
+                
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def _run_all_bench(self):
+        self._toggle_bench_buttons("disabled")
+        self._bench_progress.set(0.0)
+        self._bench_status_label.configure(text="Tüm testler başlatılıyor...", text_color=COLORS["accent_blue"])
+        
+        def on_progress(status_text, progress_val):
+            self.after(0, lambda: (
+                self._bench_progress.set(progress_val),
+                self._bench_status_label.configure(text=status_text)
+            ))
+            
+        def _thread():
+            try:
+                report = self._benchmark_suite.run_all(on_progress=on_progress)
+                from src.utils.benchmark import generate_markdown_report
+                md = generate_markdown_report(report)
+                self.after(0, lambda: self._show_bench_result(md, "Tüm testler başarıyla tamamlandı.", 1.0))
+            except Exception as e:
+                self.after(0, lambda: self._show_bench_error(f"Tümünü Çalıştır hatası: {e}"))
+                
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def _show_bench_result(self, md_report: str, status_msg: str, progress_val: float):
+        self._bench_progress.set(progress_val)
+        self._bench_status_label.configure(text=status_msg, text_color=COLORS["accent_green"])
+        
+        self._bench_report_box.configure(state="normal")
+        self._bench_report_box.delete("1.0", "end")
+        self._bench_report_box.insert("1.0", md_report)
+        self._bench_report_box.configure(state="disabled")
+        
+        self._toggle_bench_buttons("normal")
+
+    def _show_bench_error(self, err_msg: str):
+        self._bench_progress.set(0.0)
+        self._bench_status_label.configure(text=err_msg, text_color=COLORS["accent_red"])
+        
+        self._bench_report_box.configure(state="normal")
+        self._bench_report_box.delete("1.0", "end")
+        self._bench_report_box.insert("1.0", f"Hata Oluştu:\n{err_msg}")
+        self._bench_report_box.configure(state="disabled")
+        
+        self._toggle_bench_buttons("normal")
+
+    def _copy_bench_report(self):
+        report_text = self._bench_report_box.get("1.0", "end-1c").strip()
+        if not report_text or report_text.startswith("Hata Oluştu:") or report_text == "":
+            self._set_status("Kopyalanacak geçerli bir rapor yok.")
+            return
+        
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(report_text)
+            self._set_status("Rapor panoya kopyalandı!")
+            self._log("[BENCHMARK] Rapor panoya kopyalandı.", "info")
+        except Exception as e:
+            self._log(f"[BENCHMARK] Panoya kopyalama hatası: {e}", "error")
+            self._set_status("Kopyalama hatası.")

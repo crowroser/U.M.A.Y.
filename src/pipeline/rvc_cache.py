@@ -1,13 +1,11 @@
 """
-src/pipeline/tts_cache.py
-Akilli TTS cache — ayni altyazi tekrar geldiginde TTS'i atlar.
-RAM + Disk Cache (WAV) destegi.
+src/pipeline/rvc_cache.py
+RVC Ses Dönüşüm Önbellek Modülü.
 """
 
 import hashlib
 import threading
 import time
-import sys
 import logging
 from collections import OrderedDict
 from typing import Optional, Tuple
@@ -15,13 +13,13 @@ from pathlib import Path
 
 import numpy as np
 
-logger = logging.getLogger("UMAY.TTSCache")
+logger = logging.getLogger("UMAY.RVCCache")
 
 
-class TTSCache:
+class RVCAudioCache:
     """
-    LRU RAM & Disk cache — tekrarlayan TTS cagrilarini atlamak icin.
-    Disk onbellegi `models/cache/tts/` altinda saklanir.
+    RVC Ses Dönüşüm sonuçlarını (numpy) RAM ve disk üzerinde saklayan sınıf.
+    Anahtar: md5(input_audio_bytes) + character + pitch_override
     """
 
     def __init__(
@@ -34,26 +32,24 @@ class TTSCache:
         self._enabled = enabled
         self._max_bytes = max_memory_mb * 1024 * 1024
         self._current_bytes = 0
-        self._cache: OrderedDict[str, _CacheEntry] = OrderedDict()
+        self._cache: OrderedDict[str, _RVCCacheEntry] = OrderedDict()
         self._lock = threading.Lock()
 
         # Disk cache ayarları
         self._disk_enabled = disk_enabled
         self._disk_limit_bytes = disk_limit_mb * 1024 * 1024
-        self._cache_dir = Path(__file__).parent.parent.parent / "models" / "cache" / "tts"
-        
+        self._cache_dir = Path(__file__).parent.parent.parent / "models" / "cache" / "rvc"
+
         if self._enabled and self._disk_enabled:
             try:
                 self._cache_dir.mkdir(parents=True, exist_ok=True)
             except Exception as e:
-                logger.error(f"TTS Disk Cache klasoru olusturulamadi: {e}")
+                logger.error(f"RVC Disk Cache klasoru olusturulamadi: {e}")
 
-        # Istatistikler
+        # İstatistikler
         self._hits = 0
         self._misses = 0
         self._evictions = 0
-        self._total_saved_ms = 0  # Tahmini tasarruf
-        self._avg_tts_ms = 1500  # Baslangic tahmini
 
     @property
     def enabled(self) -> bool:
@@ -73,27 +69,27 @@ class TTSCache:
         if value:
             try:
                 self._cache_dir.mkdir(parents=True, exist_ok=True)
-            except Exception as e:
-                logger.error(f"TTS Disk Cache klasoru olusturulamadi: {e}")
+            except Exception:
+                pass
 
-    @staticmethod
-    def _make_key(text: str, speaker: str, emotion: str) -> str:
-        """Metin + konusmaci + duygu icin benzersiz hash olusturur."""
-        raw = f"{text.strip().lower()}|{(speaker or '').strip().lower()}|{(emotion or 'neutral').strip().lower()}"
+    def _make_key(self, audio_data: np.ndarray, character: str, pitch: int) -> str:
+        """Giriş ses verisi, karakter adı ve pitch ayarına göre benzersiz md5 üretir."""
+        try:
+            audio_hash = hashlib.md5(audio_data.tobytes()).hexdigest()
+        except Exception:
+            # Fallback (veride hata varsa)
+            audio_hash = str(hash(audio_data.data.tobytes() if hasattr(audio_data, 'data') else audio_data))
+        raw = f"{audio_hash}|{(character or '').strip().lower()}|{pitch}"
         return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
     def get(
-        self, text: str, speaker: str = "", emotion: str = "neutral"
+        self, audio_data: np.ndarray, character: str = "", pitch: int = 0
     ) -> Optional[Tuple[int, np.ndarray]]:
-        """
-        Cache'den ses verisini arar.
-        RAM'de bulursa doğrudan döner.
-        RAM'de yoksa ve disk cache aktifse, diskten okumayı dener.
-        """
-        if not self._enabled:
+        """Önbellekten RVC sonucunu arar."""
+        if not self._enabled or audio_data is None:
             return None
 
-        key = self._make_key(text, speaker, emotion)
+        key = self._make_key(audio_data, character, pitch)
 
         # 1. RAM Cache kontrolü
         with self._lock:
@@ -103,7 +99,6 @@ class TTSCache:
                 entry.hit_count += 1
                 entry.last_access = time.monotonic()
                 self._hits += 1
-                self._total_saved_ms += self._avg_tts_ms
                 return (entry.sr, entry.data.copy())
 
         # 2. Disk Cache kontrolü
@@ -114,51 +109,40 @@ class TTSCache:
                     import scipy.io.wavfile as wavfile
                     sr, data = wavfile.read(str(filepath))
                     
-                    # Disk cache hit'i RAM cache'e yaz (yazarken tekrar diske yazmasın diye write_disk=False)
-                    self.put(text, speaker, emotion, sr, data, tts_duration_ms=0, write_disk=False)
+                    # RAM cache'e yaz (yazarken tekrar diske yazmasın diye write_disk=False)
+                    self.put(audio_data, character, pitch, sr, data, write_disk=False)
                     
-                    # Dosyanın mtime'ını güncelleyerek LRU'da öne çek
                     try:
                         filepath.touch()
                     except OSError:
                         pass
                         
                     self._hits += 1
-                    self._total_saved_ms += self._avg_tts_ms
                     return sr, data.copy()
                 except Exception as e:
-                    logger.error(f"Disk cache okuma hatasi: {e}")
+                    logger.error(f"RVC Disk cache okuma hatasi: {e}")
 
         self._misses += 1
         return None
 
     def put(
         self,
-        text: str,
-        speaker: str,
-        emotion: str,
+        audio_data: np.ndarray,
+        character: str,
+        pitch: int,
         sr: int,
-        data: np.ndarray,
-        tts_duration_ms: int = 0,
+        output_data: np.ndarray,
         write_disk: bool = True,
     ):
-        """
-        Ses verisini cache'e ekler.
-        RAM bütçesi aşılırsa RAM'den, disk bütçesi aşılırsa diskten tahliye yapar.
-        """
-        if not self._enabled:
+        """Sonucu önbelleğe ekler."""
+        if not self._enabled or audio_data is None or output_data is None:
             return
 
-        key = self._make_key(text, speaker, emotion)
-        entry_size = data.nbytes + 128
+        key = self._make_key(audio_data, character, pitch)
+        entry_size = output_data.nbytes + 128
 
         if entry_size > self._max_bytes * 0.5:
             return
-
-        if tts_duration_ms > 0:
-            self._avg_tts_ms = int(
-                self._avg_tts_ms * 0.8 + tts_duration_ms * 0.2
-            )
 
         # 1. RAM Cache'e ekleme
         with self._lock:
@@ -171,11 +155,10 @@ class TTSCache:
                 self._current_bytes -= evicted_entry.data.nbytes + 128
                 self._evictions += 1
 
-            self._cache[key] = _CacheEntry(
+            self._cache[key] = _RVCCacheEntry(
                 sr=sr,
-                data=data.copy(),
-                text_preview=text[:60],
-                speaker=speaker,
+                data=output_data.copy(),
+                character=character,
             )
             self._current_bytes += entry_size
 
@@ -185,13 +168,13 @@ class TTSCache:
                 filepath = self._cache_dir / f"{key}.wav"
                 import scipy.io.wavfile as wavfile
                 self._cache_dir.mkdir(parents=True, exist_ok=True)
-                wavfile.write(str(filepath), sr, data)
+                wavfile.write(str(filepath), sr, output_data)
                 self._manage_disk_eviction()
             except Exception as e:
-                logger.error(f"Disk cache yazma hatasi: {e}")
+                logger.error(f"RVC Disk cache yazma hatasi: {e}")
 
     def _manage_disk_eviction(self):
-        """Diskteki cache boyutu limiti aşmışsa en eski dosyaları (LRU) siler."""
+        """Disk limit aşımında LRU temizliği."""
         if not self._cache_dir.exists():
             return
         try:
@@ -208,7 +191,6 @@ class TTSCache:
             if total_bytes <= self._disk_limit_bytes:
                 return
 
-            # mtime bazında küçükten büyüğe sırala (en eski en başta)
             file_stats.sort(key=lambda x: x[2])
 
             for f, size, _ in file_stats:
@@ -221,10 +203,10 @@ class TTSCache:
                 except OSError:
                     pass
         except Exception as e:
-            logger.error(f"Disk cache temizleme hatasi: {e}")
+            logger.error(f"RVC Disk cache temizleme hatasi: {e}")
 
     def clear(self):
-        """RAM ve Disk cache'i tamamen temizler."""
+        """RAM ve Disk önbelleği temizler."""
         with self._lock:
             self._cache.clear()
             self._current_bytes = 0
@@ -237,14 +219,13 @@ class TTSCache:
                     except OSError:
                         pass
             except Exception as e:
-                logger.error(f"Disk cache temizlenirken hata: {e}")
+                logger.error(f"RVC Disk cache temizlenirken hata: {e}")
 
     def get_stats(self) -> dict:
-        """Cache istatistiklerini doner."""
+        """İstatistikleri döner."""
         with self._lock:
             total = self._hits + self._misses
             
-            # Disk üzerindeki toplam boyutu hesapla
             disk_bytes = 0
             disk_entries = 0
             if self._disk_enabled and self._cache_dir.exists():
@@ -266,8 +247,6 @@ class TTSCache:
                 "misses": self._misses,
                 "hit_rate": round(self._hits / total, 2) if total > 0 else 0.0,
                 "evictions": self._evictions,
-                "saved_ms": self._total_saved_ms,
-                "avg_tts_ms": self._avg_tts_ms,
             }
 
     def update_settings(
@@ -277,7 +256,6 @@ class TTSCache:
         disk_enabled: Optional[bool] = None,
         disk_limit_mb: Optional[int] = None,
     ):
-        """Cache ayarlarini gunceller."""
         if enabled is not None:
             self._enabled = enabled
         if max_memory_mb is not None:
@@ -299,16 +277,13 @@ class TTSCache:
             self._manage_disk_eviction()
 
 
-class _CacheEntry:
-    """Cache'deki tek bir ses verisi ogesi."""
+class _RVCCacheEntry:
+    __slots__ = ("sr", "data", "character", "hit_count", "created", "last_access")
 
-    __slots__ = ("sr", "data", "text_preview", "speaker", "hit_count", "created", "last_access")
-
-    def __init__(self, sr: int, data: np.ndarray, text_preview: str, speaker: str):
+    def __init__(self, sr: int, data: np.ndarray, character: str):
         self.sr = sr
         self.data = data
-        self.text_preview = text_preview
-        self.speaker = speaker
+        self.character = character
         self.hit_count = 0
         self.created = time.monotonic()
         self.last_access = time.monotonic()
