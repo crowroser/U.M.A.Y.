@@ -18,7 +18,7 @@ pycaw>=20251023
 torch
 torchvision
 torchaudio
-transformers==4.46.3
+transformers>=4.47.0
 huggingface_hub>=1.7.1
 sentencepiece>=0.1.99
 sacremoses>=0.0.53
