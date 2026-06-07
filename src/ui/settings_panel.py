@@ -19,12 +19,13 @@ class SettingsPanel(ctk.CTkFrame):
         )
         self._notebook = ctk.CTkTabview(self)
         self._notebook.pack(fill="both", expand=True, padx=8, pady=4)
-        for t in ["OCR", "TTS", "RVC", "Ceviri", "Duygu", "Ses", "Bellek"]:
+        for t in ["OCR", "TTS", "RVC", "Ceviri", "Overlay", "Duygu", "Ses", "Bellek"]:
             self._notebook.add(t)
         self._build_ocr_tab()
         self._build_tts_tab()
         self._build_rvc_tab()
         self._build_translate_tab()
+        self._build_overlay_tab()
         self._build_sentiment_tab()
         self._build_audio_tab()
         self._build_vram_tab()
@@ -34,7 +35,11 @@ class SettingsPanel(ctk.CTkFrame):
 
     def _build_ocr_tab(self):
         tab = self._notebook.tab("OCR")
-        ctk.CTkLabel(tab, text="Tesseract Yolu:").pack(anchor="w", padx=8, pady=(8, 0))
+        ctk.CTkLabel(tab, text="OCR Motoru:").pack(anchor="w", padx=8, pady=(8, 0))
+        self._ocr_engine = ctk.CTkComboBox(tab, values=["tesseract", "easyocr", "paddleocr"])
+        self._ocr_engine.set("tesseract")
+        self._ocr_engine.pack(fill="x", padx=8, pady=(0, 8))
+        ctk.CTkLabel(tab, text="Tesseract Yolu:").pack(anchor="w", padx=8)
         self._tess_path = ctk.CTkEntry(tab, placeholder_text="C:\\...\\tesseract.exe")
         self._tess_path.pack(fill="x", padx=8, pady=(0, 8))
         ctk.CTkLabel(tab, text="OCR Dili:").pack(anchor="w", padx=8)
@@ -176,19 +181,67 @@ class SettingsPanel(ctk.CTkFrame):
             tab, text="Otomatik Ceviriyi Etkinlestir",
             variable=self._translate_enabled,
         ).pack(anchor="w", padx=8, pady=(12, 8))
+        ctk.CTkLabel(tab, text="Çeviri Motoru:").pack(anchor="w", padx=8)
+        self._translate_engine = ctk.CTkComboBox(
+            tab, values=["google", "opus", "deepl"]
+        )
+        self._translate_engine.set("google")
+        self._translate_engine.pack(fill="x", padx=8, pady=(0, 8))
+        ctk.CTkLabel(tab, text="DeepL API Anahtarı:").pack(anchor="w", padx=8)
+        self._deepl_key = ctk.CTkEntry(tab, placeholder_text="DeepL API Key (fx ile biten veya normal)", show="*")
+        self._deepl_key.pack(fill="x", padx=8, pady=(0, 8))
         ctk.CTkLabel(tab, text="Kaynak Dil:").pack(anchor="w", padx=8)
         self._src_lang = ctk.CTkComboBox(
             tab, values=["eng", "deu", "fra", "jpn", "kor", "zho", "spa", "rus"]
         )
         self._src_lang.set("eng")
         self._src_lang.pack(fill="x", padx=8, pady=(0, 8))
-        ctk.CTkLabel(tab, text="Model (HuggingFace):").pack(anchor="w", padx=8)
+        ctk.CTkLabel(tab, text="Model (HuggingFace - Opus için):").pack(anchor="w", padx=8)
         self._translate_model = ctk.CTkEntry(tab, placeholder_text="Helsinki-NLP/opus-mt-tc-big-en-tr")
         self._translate_model.pack(fill="x", padx=8, pady=(0, 8))
         ctk.CTkLabel(
             tab, text="Ilk etkinlestirmede yuklenir (~300 MB).",
             font=ctk.CTkFont(size=11), text_color="gray",
         ).pack(anchor="w", padx=8)
+
+    # ── Overlay ───────────────────────────────────────────────────────
+
+    def _build_overlay_tab(self):
+        tab = self._notebook.tab("Overlay")
+        self._overlay_enabled = ctk.BooleanVar(value=False)
+        ctk.CTkSwitch(
+            tab, text="Oyun Üstü Altyazı (Overlay) Aktif",
+            variable=self._overlay_enabled,
+        ).pack(anchor="w", padx=8, pady=(12, 8))
+
+        ctk.CTkLabel(tab, text="Yazı Tipi Boyutu:").pack(anchor="w", padx=8)
+        self._overlay_font_size = ctk.CTkSlider(tab, from_=12, to=48, number_of_steps=36)
+        self._overlay_font_size.set(20)
+        self._overlay_font_size.pack(fill="x", padx=8, pady=(0, 4))
+        self._font_size_label = ctk.CTkLabel(tab, text="20 px")
+        self._font_size_label.pack(anchor="e", padx=8)
+        self._overlay_font_size.configure(command=self._update_font_size_label)
+
+        ctk.CTkLabel(tab, text="Konum:").pack(anchor="w", padx=8, pady=(8, 0))
+        self._overlay_position = ctk.CTkComboBox(
+            tab, values=["bottom", "top", "custom"], command=self._toggle_overlay_custom_y
+        )
+        self._overlay_position.set("bottom")
+        self._overlay_position.pack(fill="x", padx=8, pady=(0, 8))
+
+        ctk.CTkLabel(tab, text="Özel Y Konumu (Piksel):").pack(anchor="w", padx=8)
+        self._overlay_custom_y = ctk.CTkEntry(tab, placeholder_text="e.g. 500")
+        self._overlay_custom_y.pack(fill="x", padx=8, pady=(0, 8))
+        self._overlay_custom_y.configure(state="disabled")
+
+    def _update_font_size_label(self, v):
+        self._font_size_label.configure(text=f"{int(float(v))} px")
+
+    def _toggle_overlay_custom_y(self, val):
+        if val == "custom":
+            self._overlay_custom_y.configure(state="normal")
+        else:
+            self._overlay_custom_y.configure(state="disabled")
 
     # ── Duygu ────────────────────────────────────────────────────────
 
@@ -283,6 +336,7 @@ class SettingsPanel(ctk.CTkFrame):
                 "language": self._ocr_lang.get().strip() or "tur",
                 "interval": self._ocr_interval.get(),
                 "monitor": int(self._monitor_var.get()),
+                "engine_type": self._ocr_engine.get(),
             },
             "tts": {
                 "language": self._tts_lang.get().strip() or "tr",
@@ -299,8 +353,16 @@ class SettingsPanel(ctk.CTkFrame):
             },
             "translate": {
                 "enabled": self._translate_enabled.get(),
+                "engine": self._translate_engine.get(),
+                "api_key": self._deepl_key.get().strip(),
                 "source_lang": self._src_lang.get(),
                 "model": self._translate_model.get().strip() or "Helsinki-NLP/opus-mt-tc-big-en-tr",
+            },
+            "overlay": {
+                "enabled": self._overlay_enabled.get(),
+                "font_size": int(self._overlay_font_size.get()),
+                "position": self._overlay_position.get(),
+                "custom_y": self._get_custom_y_value(),
             },
             "sentiment": {
                 "enabled": self._sentiment_enabled.get(),
@@ -319,15 +381,27 @@ class SettingsPanel(ctk.CTkFrame):
             }
         })
 
+    def _get_custom_y_value(self) -> Optional[int]:
+        val = self._overlay_custom_y.get().strip()
+        if not val:
+            return None
+        try:
+            return int(val)
+        except ValueError:
+            return None
+
     def load_config(self, config: dict):
         ocr  = config.get("ocr", {})
         tts  = config.get("tts", {})
         rvc  = config.get("rvc", {})
         tr   = config.get("translate", {})
+        overlay = config.get("overlay", {})
         sent = config.get("sentiment", {})
         dk   = config.get("ducking", {})
         vram = config.get("vram", {})
 
+        if ocr.get("engine_type"):
+            self._ocr_engine.set(ocr["engine_type"])
         if ocr.get("tesseract_path"):
             self._tess_path.delete(0, "end")
             self._tess_path.insert(0, ocr["tesseract_path"])
@@ -367,11 +441,27 @@ class SettingsPanel(ctk.CTkFrame):
 
         if tr.get("enabled"):
             self._translate_enabled.set(tr["enabled"])
+        if tr.get("engine"):
+            self._translate_engine.set(tr["engine"])
+        if tr.get("api_key") is not None:
+            self._deepl_key.delete(0, "end")
+            self._deepl_key.insert(0, tr["api_key"])
         if tr.get("source_lang"):
             self._src_lang.set(tr["source_lang"])
         if tr.get("model"):
             self._translate_model.delete(0, "end")
             self._translate_model.insert(0, tr["model"])
+
+        self._overlay_enabled.set(overlay.get("enabled", False))
+        if overlay.get("font_size") is not None:
+            self._overlay_font_size.set(overlay["font_size"])
+            self._font_size_label.configure(text=f"{overlay['font_size']} px")
+        if overlay.get("position"):
+            self._overlay_position.set(overlay["position"])
+            self._toggle_overlay_custom_y(overlay["position"])
+        if overlay.get("custom_y") is not None:
+            self._overlay_custom_y.delete(0, "end")
+            self._overlay_custom_y.insert(0, str(overlay["custom_y"]))
 
         if sent.get("enabled"):
             self._sentiment_enabled.set(sent["enabled"])

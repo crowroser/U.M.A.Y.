@@ -78,6 +78,7 @@ class UMAYApp(ctk.CTk):
         self._pipeline_running = False
         self._region: Optional[tuple] = None
         self._pulse_active = False
+        self._overlay = None
         self._subtitle_history: list[tuple[str, str]] = []  # (speaker, text) son 3
 
         ui_cfg = config.get("ui", {})
@@ -207,6 +208,15 @@ class UMAYApp(ctk.CTk):
                 corner_radius=8,
                 command=cmd,
             ).pack(side="right", padx=3)
+
+        self._overlay_btn = ctk.CTkButton(
+            btn_frame, text="💬 Overlay Aç", width=115, height=32,
+            font=ctk.CTkFont(size=12),
+            fg_color=COLORS["accent_blue"], hover_color="#4a90d9",
+            corner_radius=8,
+            command=self._toggle_overlay_window,
+        )
+        self._overlay_btn.pack(side="right", padx=3)
 
     # ── Modul Durum Kartlari ───────────────────────────────────────────
 
@@ -874,7 +884,12 @@ class UMAYApp(ctk.CTk):
             tesseract_path=ocr_cfg.get("tesseract_path"),
             language=ocr_cfg.get("language", "tur"),
             preprocess=True,
+            engine_type=ocr_cfg.get("engine_type", "tesseract"),
         )
+
+        from src.ui.overlay import OverlayWindow
+        self._overlay = OverlayWindow(self)
+        self._overlay.withdraw()
 
         def _on_status(tag: str, prefix: str):
             def _cb(m: str):
@@ -928,6 +943,7 @@ class UMAYApp(ctk.CTk):
                 on_done=lambda ok: self.after(0, lambda: self._on_analyzer_ready(ok))
             )
 
+        self._apply_overlay_settings()
         self._refresh_indicators()
 
     def _on_tts_ready(self, ok: bool):
@@ -1120,6 +1136,8 @@ class UMAYApp(ctk.CTk):
             self._monitor.stop()
         if self._runner:
             self._runner.stop()
+        if self._overlay:
+            self._overlay.clear()
         self._log("Pipeline durduruldu.", "info")
         self._set_status("Durduruldu.")
 
@@ -1147,8 +1165,30 @@ class UMAYApp(ctk.CTk):
             if char_info:
                 speaker = char_info["name"]
 
-        self.after(0, lambda: self._update_subtitle_display(speaker, text))
-        self._log(f"[OCR] {speaker}: {text}", "ocr")
+        # Karakter rengini veritabanından al
+        char_info = db.get_character(speaker)
+        color = char_info.get("color", "#ffffff") if char_info else "#ffffff"
+
+        # Eğer çeviri aktifse ve translator varsa metni çevir
+        translated_text = text
+        if self._translator and self._translator.enabled:
+            try:
+                translated_text = self._translator.translate(text)
+            except Exception as e:
+                self._log(f"[Çeviri Hatası] {e}", "error")
+
+        # UI güncellemelerini ana thread'e yönlendir
+        self.after(0, lambda: self._update_subtitle_display(speaker, translated_text))
+        
+        # Overlay penceresini güncelle (açıksa)
+        if self._overlay and self._config.get("overlay", {}).get("enabled", False):
+            self.after(0, lambda: self._overlay.show_subtitle(speaker, translated_text, color))
+
+        if translated_text != text:
+            self._log(f"[OCR] {speaker}: {text} (Çeviri: {translated_text})", "ocr")
+        else:
+            self._log(f"[OCR] {speaker}: {text}", "ocr")
+
         if self._runner:
             self._runner.push(speaker, text)
 
@@ -1172,8 +1212,14 @@ class UMAYApp(ctk.CTk):
         tr_s  = data.get("translate", {})
 
         if ocr_s and self._capture:
-            if ocr_s.get("language"):
-                self._capture.language = ocr_s["language"]
+            engine_type = ocr_s.get("engine_type", self._capture.engine_type)
+            language = ocr_s.get("language", self._capture.language)
+            tesseract_path = ocr_s.get("tesseract_path", self._config.get("ocr", {}).get("tesseract_path"))
+            self._capture.update_engine(
+                engine_type=engine_type,
+                language=language,
+                tesseract_path=tesseract_path
+            )
             if ocr_s.get("interval") and self._monitor:
                 self._monitor.interval = ocr_s["interval"]
         if tts_s and self._tts:
@@ -1329,10 +1375,14 @@ class UMAYApp(ctk.CTk):
         dk_s   = settings.get("ducking", {})
 
         if self._capture:
-            if ocr_s.get("tesseract_path"):
-                import pytesseract
-                pytesseract.pytesseract.tesseract_cmd = ocr_s["tesseract_path"]
-            self._capture.language = ocr_s.get("language", "tur")
+            engine_type = ocr_s.get("engine_type", self._capture.engine_type)
+            language = ocr_s.get("language", "tur")
+            tesseract_path = ocr_s.get("tesseract_path")
+            self._capture.update_engine(
+                engine_type=engine_type,
+                language=language,
+                tesseract_path=tesseract_path
+            )
         if self._monitor:
             self._monitor.interval = ocr_s.get("interval", 0.4)
 
@@ -1354,6 +1404,8 @@ class UMAYApp(ctk.CTk):
             self._translator.update_settings(
                 enabled=tr_s.get("enabled"),
                 source_lang=tr_s.get("source_lang"),
+                engine=tr_s.get("engine"),
+                api_key=tr_s.get("api_key"),
             )
             if tr_s.get("enabled") and not self._translator.is_ready():
                 self._translator.load_async(
@@ -1394,6 +1446,7 @@ class UMAYApp(ctk.CTk):
         VRAMManager.get_instance().configure(self._config)
 
         self._save_config(self._config)
+        self._apply_overlay_settings()
         self._refresh_indicators()
         self._log("Ayarlar kaydedildi.", "info")
         self._set_status("Ayarlar uygulandı.")
@@ -1428,6 +1481,50 @@ class UMAYApp(ctk.CTk):
                 self._sys_monitor.stop()
             except Exception:
                 pass
+        if self._overlay:
+            try:
+                self._overlay.destroy()
+            except Exception:
+                pass
         if self._capture:
             self._capture.close()
         self.destroy()
+
+    def _toggle_overlay_window(self):
+        cfg = self._config.setdefault("overlay", {})
+        enabled = cfg.get("enabled", False)
+        new_state = not enabled
+        cfg["enabled"] = new_state
+        self._save_config(self._config)
+        self._settings_panel.load_config(self._config)
+        self._apply_overlay_settings()
+
+    def _apply_overlay_settings(self):
+        if not self._overlay:
+            return
+        cfg = self._config.get("overlay", {})
+        enabled = cfg.get("enabled", False)
+        if enabled:
+            font_size = cfg.get("font_size", 20)
+            position = cfg.get("position", "bottom")
+            custom_y = cfg.get("custom_y")
+            self._overlay.update_style(
+                font_size=font_size,
+                text_color="#ffffff",
+                position=position,
+                custom_y=custom_y
+            )
+            self._overlay.deiconify()
+            self._overlay.wm_attributes("-topmost", True)
+            self._overlay_btn.configure(
+                text="💬 Overlay Kapat",
+                fg_color=COLORS["accent_red"],
+                hover_color="#d73a3a",
+            )
+        else:
+            self._overlay.withdraw()
+            self._overlay_btn.configure(
+                text="💬 Overlay Aç",
+                fg_color=COLORS["accent_blue"],
+                hover_color="#4a90d9",
+            )
