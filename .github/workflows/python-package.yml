@@ -33,6 +33,11 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install flake8 pytest
+        # Pre-install omegaconf to fix rvc-python's invalid PEP 440 metadata
+        # rvc-python==0.1.5 depends on omegaconf==2.0.6 which has:
+        #   PyYAML (>=5.1.*) ← illegal .* suffix with >= operator
+        # Modern pip (>=24.1) rejects this; installing fixed omegaconf first resolves it
+        pip install 'omegaconf>=2.1'
         pip install -r requirements.txt
     
     - name: Lint with flake8

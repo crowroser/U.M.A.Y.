@@ -6,6 +6,9 @@ pytesseract>=0.3.13
 
 # Text-to-Speech / Voice Conversion
 TTS>=0.22.0
+# Fix: omegaconf 2.0.6 has invalid PEP 440 metadata (PyYAML >=5.1.* is illegal)
+# Pre-install correct version before rvc-python
+omegaconf>=2.1
 rvc-python==0.1.5
 # Audio / Sound
 sounddevice>=0.4.6
