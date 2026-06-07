@@ -1,18 +1,23 @@
 """
 src/ui/app.py
-U.M.A.Y ana penceresi.
+U.M.A.Y ana penceresi — Premium UI v2.
 
-Pipeline: OCR (SubtitleMonitor) → QueueRunner → Translate → TTS → RVC → Duck → sounddevice
-- Singleton TTS, RVC, Translator; VRAM'de kalir
-- Karakter eslestirme paneli
-- Preset (oyun profili) cubugu
-- Audio ducking (pycaw)
-- RegionSelector bagimsiz modulden import edilir
+Ozellikler:
+- Canli pipeline performans dashboard (TTS/RVC/Toplam sure barlari)
+- Modern modul durum kartlari (TTS/RVC/CEV/DUYGU/DUCK)
+- Animasyonlu pipeline durumu (pulsating dot)
+- Gelismis altyazi ekrani (son 3 altyazi, karakter renkleri)
+- Cache hit gostergesi ve istatistikler
+- Pipeline zamanlama cubugu
+- Log filtresi ve temizle butonu
+- Premium koyu tema renk paleti
 """
 
 from __future__ import annotations
 
 import os
+import time
+import threading
 from pathlib import Path
 from tkinter import filedialog
 from typing import Optional
@@ -22,6 +27,33 @@ import customtkinter as ctk
 from src.ui.settings_panel import SettingsPanel
 
 BASE_DIR = Path(__file__).parent.parent.parent
+
+# ── Premium Renk Paleti ───────────────────────────────────────────────
+# Koyu tema icin ozenle secilmis HSL tabanli renkler
+COLORS = {
+    "bg_dark":       "#0d1117",
+    "bg_card":       "#161b22",
+    "bg_card_hover": "#1c2333",
+    "bg_elevated":   "#21262d",
+    "border":        "#30363d",
+    "text_primary":  "#e6edf3",
+    "text_secondary":"#8b949e",
+    "text_muted":    "#484f58",
+    "accent_blue":   "#58a6ff",
+    "accent_cyan":   "#56d4dd",
+    "accent_green":  "#3fb950",
+    "accent_orange": "#d29922",
+    "accent_red":    "#f85149",
+    "accent_purple": "#bc8cff",
+    "accent_pink":   "#f778ba",
+    "gradient_start":"#1a3a5c",
+    "gradient_end":  "#0d1117",
+    "subtitle_bg":   "#1c2333",
+    "bar_tts":       "#58a6ff",
+    "bar_rvc":       "#3fb950",
+    "bar_total":     "#bc8cff",
+    "bar_cache":     "#d29922",
+}
 
 
 class UMAYApp(ctk.CTk):
@@ -45,14 +77,17 @@ class UMAYApp(ctk.CTk):
         self._preset_mgr = None
         self._pipeline_running = False
         self._region: Optional[tuple] = None
+        self._pulse_active = False
+        self._subtitle_history: list[tuple[str, str]] = []  # (speaker, text) son 3
 
         ui_cfg = config.get("ui", {})
         ctk.set_appearance_mode(ui_cfg.get("theme", "dark"))
         ctk.set_default_color_theme(ui_cfg.get("color_theme", "blue"))
 
         self.title(self.APP_TITLE)
-        self.geometry(f"{ui_cfg.get('window_width', 1100)}x{ui_cfg.get('window_height', 720)}")
-        self.minsize(900, 640)
+        self.geometry(f"{ui_cfg.get('window_width', 1200)}x{ui_cfg.get('window_height', 780)}")
+        self.minsize(1000, 680)
+        self.configure(fg_color=COLORS["bg_dark"])
 
         if self.ICON_PATH.exists():
             self.iconbitmap(str(self.ICON_PATH))
@@ -69,66 +104,411 @@ class UMAYApp(ctk.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        self._main_frame = ctk.CTkFrame(self)
-        self._main_frame.grid(row=0, column=0, sticky="nsew", padx=(12, 6), pady=12)
+        # Sol: Ana panel
+        self._main_frame = ctk.CTkFrame(self, fg_color=COLORS["bg_card"], corner_radius=12)
+        self._main_frame.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
         self._main_frame.grid_columnconfigure(0, weight=1)
-        self._main_frame.grid_rowconfigure(5, weight=1)
+        self._main_frame.grid_rowconfigure(6, weight=1)  # Log alani genisler
 
-        self._right_panel = ctk.CTkTabview(self, width=280)
-        self._right_panel.grid(row=0, column=1, sticky="nsew", padx=(6, 12), pady=12)
-        self._right_panel.add("Ayarlar")
-        self._right_panel.add("Karakterler")
+        # Sag: Tab paneli
+        self._right_panel = ctk.CTkTabview(
+            self, width=300,
+            fg_color=COLORS["bg_card"],
+            segmented_button_fg_color=COLORS["bg_elevated"],
+            segmented_button_selected_color=COLORS["accent_blue"],
+            segmented_button_selected_hover_color="#4a90d9",
+            segmented_button_unselected_color=COLORS["bg_elevated"],
+            segmented_button_unselected_hover_color=COLORS["bg_card_hover"],
+        )
+        self._right_panel.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
+        self._right_panel.add("⚙ Ayarlar")
+        self._right_panel.add("👤 Karakterler")
+        self._right_panel.add("📊 Performans")
 
         self._settings_panel = SettingsPanel(
-            self._right_panel.tab("Ayarlar"),
+            self._right_panel.tab("⚙ Ayarlar"),
             on_save=self._apply_settings,
         )
         self._settings_panel.pack(fill="both", expand=True)
         self._settings_panel.load_config(self._config)
 
-        self._build_char_panel(self._right_panel.tab("Karakterler"))
+        self._build_char_panel(self._right_panel.tab("👤 Karakterler"))
+        self._build_perf_panel(self._right_panel.tab("📊 Performans"))
 
         self._build_header()
         self._build_preset_bar()
+        self._build_module_cards()
         self._build_control_bar()
-        self._build_subtitle_bar()
+        self._build_subtitle_display()
+        self._build_pipeline_timing_bar()
         self._build_log_area()
         self._build_status_bar()
 
+    # ── Header ─────────────────────────────────────────────────────────
+
     def _build_header(self):
-        header = ctk.CTkFrame(self._main_frame, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 0))
+        header = ctk.CTkFrame(
+            self._main_frame,
+            fg_color=COLORS["gradient_start"],
+            corner_radius=10,
+            height=70,
+        )
+        header.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 0))
         header.grid_columnconfigure(1, weight=1)
+        header.grid_propagate(False)
+
+        # Logo ve baslik
+        logo_frame = ctk.CTkFrame(header, fg_color="transparent")
+        logo_frame.grid(row=0, column=0, padx=16, pady=12, sticky="w")
 
         ctk.CTkLabel(
-            header, text="U.M.A.Y",
-            font=ctk.CTkFont(size=28, weight="bold"),
-            text_color=("#1a6aaf", "#4da6ff"),
-        ).grid(row=0, column=0, sticky="w")
-        ctk.CTkLabel(
-            header, text="Unified Model-based Audio Yield",
-            font=ctk.CTkFont(size=12), text_color="gray",
-        ).grid(row=1, column=0, sticky="w")
+            logo_frame, text="U.M.A.Y",
+            font=ctk.CTkFont(family="Segoe UI", size=26, weight="bold"),
+            text_color=COLORS["accent_cyan"],
+        ).pack(side="left")
 
+        ctk.CTkLabel(
+            logo_frame, text="  v2.0",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left", pady=(6, 0))
+
+        # Pipeline durum gostergesi (animasyonlu)
+        self._pulse_frame = ctk.CTkFrame(header, fg_color="transparent")
+        self._pulse_frame.grid(row=0, column=1, sticky="e", padx=8)
+
+        self._pulse_dot = ctk.CTkLabel(
+            self._pulse_frame, text="●",
+            font=ctk.CTkFont(size=14),
+            text_color=COLORS["text_muted"],
+        )
+        self._pulse_dot.pack(side="left", padx=(0, 6))
+
+        self._pipeline_status_label = ctk.CTkLabel(
+            self._pulse_frame, text="Beklemede",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_secondary"],
+        )
+        self._pipeline_status_label.pack(side="left")
+
+        # Sag ust butonlar
         btn_frame = ctk.CTkFrame(header, fg_color="transparent")
-        btn_frame.grid(row=0, column=2, rowspan=2, sticky="e")
+        btn_frame.grid(row=0, column=2, padx=12, sticky="e")
+
+        for text, color, hover, cmd in [
+            ("🎙 Ses Modeli", COLORS["accent_purple"], "#9b6fd9", self._open_model_manager),
+            ("📸 Test Yakala", COLORS["accent_orange"], "#b5841c", self._test_capture),
+            ("🖼 Bölge Seç", COLORS["accent_green"], "#2ea043", self._select_region),
+        ]:
+            ctk.CTkButton(
+                btn_frame, text=text, width=115, height=32,
+                font=ctk.CTkFont(size=12),
+                fg_color=color, hover_color=hover,
+                corner_radius=8,
+                command=cmd,
+            ).pack(side="right", padx=3)
+
+    # ── Modul Durum Kartlari ───────────────────────────────────────────
+
+    def _build_module_cards(self):
+        """Her modul icin kucuk durum karti."""
+        cards_frame = ctk.CTkFrame(self._main_frame, fg_color="transparent")
+        cards_frame.grid(row=2, column=0, sticky="ew", padx=12, pady=(6, 0))
+        for i in range(5):
+            cards_frame.grid_columnconfigure(i, weight=1)
+
+        self._module_cards = {}
+        modules = [
+            ("TTS", "🔊", COLORS["bar_tts"], "Hazırlanıyor…"),
+            ("RVC", "🎤", COLORS["bar_rvc"], "Model Yok"),
+            ("CEV", "🌐", COLORS["text_muted"], "Kapalı"),
+            ("DUYGU", "😊", COLORS["text_muted"], "Kapalı"),
+            ("DUCK", "🔉", COLORS["text_muted"], "Kapalı"),
+        ]
+
+        for col, (name, icon, color, status) in enumerate(modules):
+            card = ctk.CTkFrame(
+                cards_frame,
+                fg_color=COLORS["bg_elevated"],
+                corner_radius=8,
+                height=54,
+            )
+            card.grid(row=0, column=col, padx=3, pady=2, sticky="ew")
+            card.grid_propagate(False)
+            card.grid_columnconfigure(1, weight=1)
+
+            # Ikon
+            ctk.CTkLabel(
+                card, text=icon, font=ctk.CTkFont(size=18),
+                width=30,
+            ).grid(row=0, column=0, padx=(8, 2), pady=6, rowspan=2)
+
+            # Baslik
+            ctk.CTkLabel(
+                card, text=name,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=COLORS["text_primary"],
+            ).grid(row=0, column=1, sticky="w", padx=2, pady=(6, 0))
+
+            # Durum etiketi
+            status_label = ctk.CTkLabel(
+                card, text=status,
+                font=ctk.CTkFont(size=10),
+                text_color=color,
+            )
+            status_label.grid(row=1, column=1, sticky="w", padx=2, pady=(0, 6))
+
+            # Tiklama toggle
+            card.bind("<Button-1>", lambda e, n=name: self._toggle_module(n))
+            # Tum child'lar da tiklanasin
+            for child in card.winfo_children():
+                child.bind("<Button-1>", lambda e, n=name: self._toggle_module(n))
+
+            self._module_cards[name] = {
+                "card": card,
+                "status": status_label,
+                "color": color,
+            }
+
+    def _update_card(self, name: str, status: str, color: str):
+        """Modul kartini gunceller."""
+        if name in self._module_cards:
+            mc = self._module_cards[name]
+            mc["status"].configure(text=status, text_color=color)
+            mc["color"] = color
+
+    def _toggle_module(self, name: str):
+        """Modul karti tiklandiginda toggle."""
+        toggles = {
+            "CEV": self._toggle_translate,
+            "DUYGU": self._toggle_analyzer,
+            "RVC": self._toggle_rvc,
+            "DUCK": self._toggle_ducking,
+        }
+        fn = toggles.get(name)
+        if fn:
+            fn()
+
+    # ── Kontrol Cubugu ─────────────────────────────────────────────────
+
+    def _build_control_bar(self):
+        bar = ctk.CTkFrame(self._main_frame, fg_color="transparent")
+        bar.grid(row=3, column=0, sticky="ew", padx=12, pady=6)
+
+        # Baslat / Durdur butonu
+        self._start_btn = ctk.CTkButton(
+            bar, text="▶  Başlat", width=140, height=42,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            fg_color=COLORS["accent_blue"],
+            hover_color="#4a90d9",
+            corner_radius=10,
+            command=self._toggle_pipeline,
+        )
+        self._start_btn.pack(side="left")
+
+        # Bolge etiketi
+        self._region_label = ctk.CTkLabel(
+            bar, text="📍 Bölge: Tam Ekran",
+            text_color=COLORS["text_secondary"],
+            font=ctk.CTkFont(size=11),
+        )
+        self._region_label.pack(side="right", padx=8)
+
+    # ── Altyazi Ekrani ─────────────────────────────────────────────────
+
+    def _build_subtitle_display(self):
+        """Son 3 altyaziyi gosteren premium gorunum."""
+        sub_frame = ctk.CTkFrame(
+            self._main_frame,
+            fg_color=COLORS["subtitle_bg"],
+            corner_radius=10,
+            height=90,
+        )
+        sub_frame.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 4))
+        sub_frame.grid_propagate(False)
+        sub_frame.grid_columnconfigure(0, weight=1)
+
+        header = ctk.CTkFrame(sub_frame, fg_color="transparent", height=20)
+        header.pack(fill="x", padx=10, pady=(6, 0))
+        ctk.CTkLabel(
+            header, text="💬 Altyazılar",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left")
+
+        self._sub_lines: list[ctk.CTkLabel] = []
+        for i in range(3):
+            alpha = 1.0 - i * 0.3  # Eski satirlar soluk
+            lbl = ctk.CTkLabel(
+                sub_frame, text="",
+                font=ctk.CTkFont(
+                    family="Segoe UI",
+                    size=14 - i * 1,
+                    weight="bold" if i == 0 else "normal",
+                ),
+                text_color=COLORS["text_primary"] if i == 0 else COLORS["text_secondary"],
+                anchor="w",
+            )
+            lbl.pack(fill="x", padx=14, pady=(2, 0))
+            self._sub_lines.append(lbl)
+
+    def _update_subtitle_display(self, speaker: str, text: str):
+        """Yeni altyazi geldiginde ekrani gunceller."""
+        self._subtitle_history.insert(0, (speaker, text))
+        if len(self._subtitle_history) > 3:
+            self._subtitle_history = self._subtitle_history[:3]
+
+        from src.pipeline.character_db import CharacterDatabase
+        db = CharacterDatabase.get_instance()
+
+        for i, lbl in enumerate(self._sub_lines):
+            if i < len(self._subtitle_history):
+                sp, tx = self._subtitle_history[i]
+                display = f"{sp}: {tx}" if sp else tx
+                lbl.configure(text=display)
+                
+                # Karakter rengini uygula
+                char_info = db.get_character(sp) if sp else None
+                if char_info and char_info.get("color"):
+                    lbl.configure(text_color=char_info["color"])
+                else:
+                    lbl.configure(text_color=COLORS["text_primary"] if i == 0 else COLORS["text_secondary"])
+            else:
+                lbl.configure(text="")
+
+    # ── Pipeline Zamanlama Cubugu ───────────────────────────────────────
+
+    def _build_pipeline_timing_bar(self):
+        """Canli zamanlama gostergesi — TTS/RVC/Toplam sure barlari."""
+        timing_frame = ctk.CTkFrame(
+            self._main_frame,
+            fg_color=COLORS["bg_elevated"],
+            corner_radius=8,
+            height=40,
+        )
+        timing_frame.grid(row=5, column=0, sticky="ew", padx=12, pady=(0, 4))
+        timing_frame.grid_propagate(False)
+        timing_frame.grid_columnconfigure(0, weight=1)
+
+        inner = ctk.CTkFrame(timing_frame, fg_color="transparent")
+        inner.pack(fill="both", expand=True, padx=10, pady=6)
+
+        self._timing_labels = {}
+        items = [
+            ("⏱ TTS:", "tts", COLORS["bar_tts"]),
+            ("⏱ RVC:", "rvc", COLORS["bar_rvc"]),
+            ("⏱ Toplam:", "total", COLORS["bar_total"]),
+            ("📦 Cache:", "cache", COLORS["bar_cache"]),
+        ]
+
+        for text, key, color in items:
+            f = ctk.CTkFrame(inner, fg_color="transparent")
+            f.pack(side="left", padx=(0, 16))
+            ctk.CTkLabel(
+                f, text=text,
+                font=ctk.CTkFont(size=10),
+                text_color=COLORS["text_muted"],
+            ).pack(side="left")
+            lbl = ctk.CTkLabel(
+                f, text="—",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=color,
+            )
+            lbl.pack(side="left", padx=(4, 0))
+            self._timing_labels[key] = lbl
+
+    def _update_timing_bar(self, stats: dict):
+        """Zamanlama cubuğunu istatistiklerle günceller."""
+        def _update():
+            steps = stats.get("steps", {})
+            for key in ("tts", "rvc", "total"):
+                if key in steps:
+                    avg = steps[key].get("avg", 0)
+                    if key in self._timing_labels:
+                        if avg < 1000:
+                            self._timing_labels[key].configure(text=f"{avg}ms")
+                        else:
+                            self._timing_labels[key].configure(text=f"{avg/1000:.1f}s")
+
+            cache = stats.get("cache", {})
+            if isinstance(cache, dict):
+                hits = cache.get("hits", 0)
+                hit_rate = cache.get("hit_rate", 0)
+                if "cache" in self._timing_labels:
+                    self._timing_labels["cache"].configure(
+                        text=f"%{int(hit_rate * 100)} ({hits} hit)"
+                    )
+        self.after(0, _update)
+
+    # ── Log Alani ──────────────────────────────────────────────────────
+
+    def _build_log_area(self):
+        log_header = ctk.CTkFrame(self._main_frame, fg_color="transparent")
+        log_header.grid(row=6, column=0, sticky="ew", padx=12, pady=(0, 2))
+
+        ctk.CTkLabel(
+            log_header, text="📋 Pipeline Kayıtları",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left")
 
         ctk.CTkButton(
-            btn_frame, text="Ses Modeli", width=110,
-            command=self._open_model_manager,
-        ).pack(side="right", padx=(8, 0))
+            log_header, text="🗑 Temizle", width=80, height=24,
+            font=ctk.CTkFont(size=10),
+            fg_color=COLORS["bg_elevated"],
+            hover_color=COLORS["bg_card_hover"],
+            corner_radius=6,
+            command=self._clear_log,
+        ).pack(side="right")
 
-        ctk.CTkButton(
-            btn_frame, text="Test Yakala", width=110,
-            fg_color=("#6d3d91", "#8e44ad"), hover_color=("#522d6e", "#7d3c98"),
-            command=self._test_capture,
-        ).pack(side="right", padx=(8, 0))
+        self._log_box = ctk.CTkTextbox(
+            self._main_frame,
+            font=ctk.CTkFont(family="Cascadia Code,Consolas", size=11),
+            state="disabled", wrap="word",
+            fg_color=COLORS["bg_dark"],
+            border_color=COLORS["border"],
+            border_width=1,
+            corner_radius=8,
+        )
+        self._log_box.grid(row=7, column=0, sticky="nsew", padx=12, pady=(0, 6))
+        self._main_frame.grid_rowconfigure(7, weight=1)
 
-        ctk.CTkButton(
-            btn_frame, text="Bölge Seç", width=100,
-            fg_color=("#2d7d46", "#27ae60"), hover_color=("#235f36", "#1e8449"),
-            command=self._select_region,
-        ).pack(side="right", padx=(8, 0))
+        for tag, color in [
+            ("ocr", "#5dade2"), ("tts", COLORS["bar_tts"]), ("rvc", COLORS["bar_rvc"]),
+            ("audio", "#f9e79f"), ("error", COLORS["accent_red"]),
+            ("info", COLORS["text_secondary"]),
+        ]:
+            self._log_box.tag_config(tag, foreground=color)
+
+    def _clear_log(self):
+        self._log_box.configure(state="normal")
+        self._log_box.delete("1.0", "end")
+        self._log_box.configure(state="disabled")
+
+    # ── Durum Cubugu ───────────────────────────────────────────────────
+
+    def _build_status_bar(self):
+        bar = ctk.CTkFrame(
+            self._main_frame, height=28,
+            fg_color=COLORS["bg_elevated"],
+            corner_radius=0,
+        )
+        bar.grid(row=8, column=0, sticky="ew")
+        self._status_var = ctk.StringVar(value="✓ Hazır")
+        ctk.CTkLabel(
+            bar, textvariable=self._status_var,
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left", padx=10)
+
+        self._perf_var = ctk.StringVar(value="")
+        ctk.CTkLabel(
+            bar, textvariable=self._perf_var,
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["accent_cyan"],
+        ).pack(side="right", padx=10)
+
+    # ── Preset Bar ─────────────────────────────────────────────────────
 
     def _build_preset_bar(self):
         from src.presets.manager import PresetManager
@@ -140,108 +520,101 @@ class UMAYApp(ctk.CTk):
             self._main_frame,
             preset_manager=self._preset_mgr,
             on_load=self._apply_preset,
-            fg_color=("gray90", "gray17"),
+            fg_color=COLORS["bg_elevated"],
             corner_radius=8,
         )
-        self._preset_bar.grid(row=1, column=0, sticky="ew", padx=16, pady=(8, 0))
+        self._preset_bar.grid(row=1, column=0, sticky="ew", padx=12, pady=(6, 0))
 
-    def _build_control_bar(self):
-        bar = ctk.CTkFrame(self._main_frame, fg_color="transparent")
-        bar.grid(row=2, column=0, sticky="ew", padx=16, pady=8)
+    # ── Performans Paneli (Sag Tab) ────────────────────────────────────
 
-        self._start_btn = ctk.CTkButton(
-            bar, text="▶  Başlat", width=130, height=40,
+    def _build_perf_panel(self, parent):
+        """Performans istatistikleri paneli."""
+        ctk.CTkLabel(
+            parent, text="Pipeline Performans",
             font=ctk.CTkFont(size=14, weight="bold"),
-            fg_color=("#1a6aaf", "#2980b9"),
-            hover_color=("#145288", "#1f6391"),
-            command=self._toggle_pipeline,
+        ).pack(anchor="w", padx=10, pady=(12, 8))
+
+        self._perf_info = ctk.CTkTextbox(
+            parent,
+            font=ctk.CTkFont(family="Cascadia Code,Consolas", size=11),
+            state="disabled",
+            height=400,
+            fg_color=COLORS["bg_dark"],
+            corner_radius=8,
         )
-        self._start_btn.pack(side="left")
+        self._perf_info.pack(fill="both", expand=True, padx=8, pady=4)
 
-        # TTS ve RVC durum etiketleri (temel modüller, toggle yok)
-        self._tts_status = ctk.CTkLabel(bar, text="TTS: Hazırlanıyor…", text_color="orange")
-        self._tts_status.pack(side="left", padx=(16, 4))
+        ctk.CTkButton(
+            parent, text="🔄 Yenile", width=100,
+            fg_color=COLORS["accent_blue"],
+            command=self._refresh_perf_panel,
+        ).pack(pady=8)
 
-        self._rvc_status = ctk.CTkLabel(bar, text="RVC: Model Yok", text_color="gray")
-        self._rvc_status.pack(side="left", padx=4)
+    def _refresh_perf_panel(self):
+        """Performans panelini güncel verilerle doldurur."""
+        if not self._runner:
+            return
+        stats = self._runner.get_stats()
+        cache_stats = self._runner.cache.get_stats()
 
-        # Ayırıcı
-        ctk.CTkLabel(bar, text="|", text_color="gray").pack(side="left", padx=6)
+        lines = []
+        lines.append("═══ Pipeline İstatistikleri ═══\n")
+        lines.append(f"  Toplam İşlem : {stats.get('total_processed', 0)}")
+        lines.append(f"  SPR          : {stats.get('spr', 0)}/s")
+        lines.append(f"  Ort Gecikme  : {stats.get('avg_latency_ms', 0)}ms\n")
 
-        # --- Tıklanabilir modül toggle butonları ---
-        self._cev_btn = ctk.CTkButton(
-            bar, text="CEV: Kapalı", width=110, height=28,
-            font=ctk.CTkFont(size=11),
-            fg_color=("gray75", "gray30"), hover_color=("gray65", "gray25"),
-            command=self._toggle_translate,
-        )
-        self._cev_btn.pack(side="left", padx=4)
+        # Canlı Sistem Kaynakları
+        if hasattr(self, "_sys_monitor") and self._sys_monitor.history:
+            sys_stats = self._sys_monitor.history[-1]
+            lines.append("═══ Sistem Kaynakları ═══\n")
+            lines.append(f"  CPU Kullanımı : %{sys_stats.get('cpu', 0):.0f}")
+            lines.append(f"  RAM Kullanımı : %{sys_stats.get('ram_percent', 0):.0f} ({sys_stats.get('ram_used', 0.0):.1f}/{sys_stats.get('ram_total', 0.0):.1f} GB)")
+            lines.append(f"  GPU Kullanımı : %{sys_stats.get('gpu', 0):.0f}")
+            lines.append(f"  VRAM          : %{sys_stats.get('vram_percent', 0):.0f} ({sys_stats.get('vram_used', 0.0):.0f}/{sys_stats.get('vram_total', 0.0):.0f} MB)\n")
 
-        self._duygu_btn = ctk.CTkButton(
-            bar, text="DUYGU: Kapalı", width=118, height=28,
-            font=ctk.CTkFont(size=11),
-            fg_color=("gray75", "gray30"), hover_color=("gray65", "gray25"),
-            command=self._toggle_analyzer,
-        )
-        self._duygu_btn.pack(side="left", padx=4)
+        # VRAM Yöneticisi Envanteri
+        from src.utils.vram_manager import VRAMManager
+        from pathlib import Path
+        import time
+        mgr = VRAMManager.get_instance()
+        loaded_models = mgr.get_loaded_models()
+        lines.append("═══ Aktif Modeller (VRAM) ═══\n")
+        lines.append(f"  Bütçe         : {mgr.budget_mb:.0f} MB")
+        lines.append(f"  Yüklü Model   : {len(loaded_models)}")
+        for m in loaded_models:
+            lines.append(f"  • [{m['type']}] {Path(m['id']).name}")
+            lines.append(f"    VRAM: {m['estimated_vram_mb']:.0f} MB | Son: {time.strftime('%H:%M:%S', time.localtime(m['last_used'])) if m['last_used'] else 'Hiç'}")
+        lines.append("")
 
-        self._rvc_toggle_btn = ctk.CTkButton(
-            bar, text="RVC: Acik", width=90, height=28,
-            font=ctk.CTkFont(size=11),
-            fg_color=("#2d7d46", "#27ae60"), hover_color=("#235f36", "#1e8449"),
-            command=self._toggle_rvc,
-        )
-        self._rvc_toggle_btn.pack(side="left", padx=4)
+        steps = stats.get("steps", {})
+        if steps:
+            lines.append("═══ Adım Süreleri (ms) ═══\n")
+            for step in ("tts", "rvc", "translate", "sentiment", "total"):
+                if step in steps:
+                    s = steps[step]
+                    lines.append(
+                        f"  {step.upper():10s}  "
+                        f"avg={s['avg']:5d}  "
+                        f"min={s['min']:5d}  "
+                        f"max={s['max']:5d}  "
+                        f"p95={s['p95']:5d}"
+                    )
 
-        self._duck_btn = ctk.CTkButton(
-            bar, text="DUCK: Kapalı", width=110, height=28,
-            font=ctk.CTkFont(size=11),
-            fg_color=("gray75", "gray30"), hover_color=("gray65", "gray25"),
-            command=self._toggle_ducking,
-        )
-        self._duck_btn.pack(side="left", padx=4)
+        lines.append(f"\n═══ TTS Cache ═══\n")
+        lines.append(f"  Öğe Sayısı   : {cache_stats.get('entries', 0)}")
+        lines.append(f"  Bellek       : {cache_stats.get('memory_mb', 0)} / {cache_stats.get('max_memory_mb', 0)} MB")
+        lines.append(f"  Hit          : {cache_stats.get('hits', 0)}")
+        lines.append(f"  Miss         : {cache_stats.get('misses', 0)}")
+        lines.append(f"  Hit Rate     : %{int(cache_stats.get('hit_rate', 0) * 100)}")
+        lines.append(f"  Evictions    : {cache_stats.get('evictions', 0)}")
+        saved = cache_stats.get("saved_ms", 0)
+        lines.append(f"  Tasarruf     : {saved/1000:.1f}s")
 
-        self._region_label = ctk.CTkLabel(bar, text="Bölge: Tam Ekran", text_color="gray")
-        self._region_label.pack(side="right")
-
-    def _build_subtitle_bar(self):
-        frame = ctk.CTkFrame(self._main_frame)
-        frame.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 4))
-        ctk.CTkLabel(frame, text="Son Altyazı:", width=110).pack(side="left", padx=8)
-        self._subtitle_var = ctk.StringVar(value="—")
-        ctk.CTkLabel(
-            frame, textvariable=self._subtitle_var,
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color="#f0e68c",
-        ).pack(side="left", padx=4, fill="x", expand=True)
-
-    def _build_log_area(self):
-        ctk.CTkLabel(
-            self._main_frame, text="Pipeline Kayıtları",
-            font=ctk.CTkFont(size=13, weight="bold"),
-        ).grid(row=4, column=0, sticky="w", padx=16, pady=(0, 2))
-
-        self._log_box = ctk.CTkTextbox(
-            self._main_frame,
-            font=ctk.CTkFont(family="Consolas", size=12),
-            state="disabled", wrap="word",
-        )
-        self._log_box.grid(row=5, column=0, sticky="nsew", padx=16, pady=(0, 8))
-
-        for tag, color in [
-            ("ocr", "#5dade2"), ("tts", "#a9cce3"), ("rvc", "#a9dfbf"),
-            ("audio", "#f9e79f"), ("error", "#f1948a"), ("info", "#d5d8dc"),
-        ]:
-            self._log_box.tag_config(tag, foreground=color)
-
-    def _build_status_bar(self):
-        bar = ctk.CTkFrame(self._main_frame, height=28, fg_color=("gray85", "gray20"))
-        bar.grid(row=6, column=0, sticky="ew")
-        self._status_var = ctk.StringVar(value="Hazır.")
-        ctk.CTkLabel(
-            bar, textvariable=self._status_var,
-            font=ctk.CTkFont(size=11), text_color="gray",
-        ).pack(side="left", padx=8)
+        text = "\n".join(lines)
+        self._perf_info.configure(state="normal")
+        self._perf_info.delete("1.0", "end")
+        self._perf_info.insert("1.0", text)
+        self._perf_info.configure(state="disabled")
 
     # ──────────────────────── Karakter Paneli ─────────────────────────
 
@@ -262,33 +635,68 @@ class UMAYApp(ctk.CTk):
 
         footer = ctk.CTkFrame(parent, fg_color="transparent")
         footer.pack(fill="x", padx=8, pady=(0, 8))
-        ctk.CTkButton(footer, text="+ Satır Ekle", command=self._add_char_row).pack(side="left")
-        ctk.CTkButton(footer, text="Kaydet", command=self._save_char_map).pack(side="right")
+        ctk.CTkButton(footer, text="+ Ekle", width=60, command=self._add_char_row).pack(side="left", padx=2)
+        ctk.CTkButton(footer, text="İçe Aktar", width=80, fg_color=COLORS["accent_orange"], command=self._import_char_pack).pack(side="left", padx=2)
+        ctk.CTkButton(footer, text="Kaydet", width=70, command=self._save_char_map).pack(side="right", padx=2)
 
-        for name, pth in self._config.get("characters", {}).items():
-            self._add_char_row(name, pth)
+        from src.pipeline.character_db import CharacterDatabase
+        db = CharacterDatabase.get_instance()
+        
+        # Migration from config if database is empty
+        if not db.list_characters() and self._config.get("characters"):
+            for name, pth in self._config.get("characters", {}).items():
+                refs = self._config.get("character_refs", {}).get(name, {})
+                db.add_character(name=name, rvc_model=pth, tts_refs=refs)
+        
+        for char in db.list_characters():
+            self._add_char_row(
+                name=char["name"],
+                pth=char.get("rvc_model") or "",
+                color=char.get("color") or "#ffffff"
+            )
 
-    def _add_char_row(self, name: str = "", pth: str = ""):
+    def _add_char_row(self, name: str = "", pth: str = "", color: str = "#ffffff"):
         row_frame = ctk.CTkFrame(self._char_scroll)
         row_frame.pack(fill="x", pady=3)
         name_var = ctk.StringVar(value=name)
         pth_var = ctk.StringVar(value=pth)
+        color_var = ctk.StringVar(value=color)
 
-        ctk.CTkEntry(row_frame, textvariable=name_var, placeholder_text="Karakter Adi", width=100).pack(side="left", padx=(4, 2))
-        ctk.CTkEntry(row_frame, textvariable=pth_var, placeholder_text="model.pth", width=120).pack(side="left", padx=2)
-        ctk.CTkButton(row_frame, text="…", width=28, command=lambda v=pth_var: self._browse_pth(v)).pack(side="left", padx=2)
+        ctk.CTkEntry(row_frame, textvariable=name_var, placeholder_text="Ad", width=70).pack(side="left", padx=(4, 2))
+        ctk.CTkEntry(row_frame, textvariable=pth_var, placeholder_text="model.pth", width=85).pack(side="left", padx=2)
+        ctk.CTkButton(row_frame, text="…", width=24, command=lambda v=pth_var: self._browse_pth(v)).pack(side="left", padx=2)
+        
+        # Renk secici butonu
+        color_btn = ctk.CTkButton(
+            row_frame, text="", width=24, height=24,
+            fg_color=color, hover_color=color,
+            corner_radius=4,
+            command=lambda v=color_var: self._pick_color(v)
+        )
+        color_btn.pack(side="left", padx=2)
+        
+        def update_btn_color(*args):
+            c = color_var.get()
+            color_btn.configure(fg_color=c, hover_color=c)
+        color_var.trace_add("write", update_btn_color)
 
-        row = {"frame": row_frame, "name": name_var, "pth": pth_var}
+        row = {"frame": row_frame, "name": name_var, "pth": pth_var, "color": color_var, "color_btn": color_btn}
 
         ctk.CTkButton(
-            row_frame, text="Refs", width=44,
-            fg_color=("#1a6aaf", "#2980b9"),
+            row_frame, text="Refs", width=40,
+            fg_color=COLORS["accent_blue"],
             command=lambda r=row: self._open_char_refs(r),
         ).pack(side="left", padx=2)
 
         ctk.CTkButton(
-            row_frame, text="✕", width=28,
-            fg_color="#c0392b", hover_color="#922b21",
+            row_frame, text="📤", width=28,
+            fg_color="#884ea0", hover_color="#7d3c98",
+            command=lambda r=row: self._export_char_pack(r),
+        ).pack(side="left", padx=2)
+
+        ctk.CTkButton(
+            row_frame, text="✕", width=24,
+            fg_color=COLORS["accent_red"], hover_color="#d73a3a",
             command=lambda r=row: self._remove_char_row(r),
         ).pack(side="left", padx=(2, 4))
         self._char_rows.append(row)
@@ -301,7 +709,7 @@ class UMAYApp(ctk.CTk):
         from src.ui.char_refs_dialog import CharacterRefsDialog
         name = row["name"].get().strip()
         if not name:
-            self._set_status("Once karakter adi girin.")
+            self._set_status("Önce karakter adı girin.")
             return
         existing = self._config.get("character_refs", {}).get(name, {})
         CharacterRefsDialog(
@@ -319,21 +727,115 @@ class UMAYApp(ctk.CTk):
         if path:
             var.set(path)
 
+    def _pick_color(self, var: ctk.StringVar):
+        from tkinter import colorchooser
+        init_color = var.get() or "#ffffff"
+        color = colorchooser.askcolor(initialcolor=init_color, title="Karakter Subtitle Rengi Seç")
+        if color[1]:
+            var.set(color[1])
+
+    def _export_char_pack(self, row: dict):
+        name = row["name"].get().strip()
+        if not name:
+            self._set_status("Önce karakter adı girin.")
+            return
+        
+        path = filedialog.asksaveasfilename(
+            title=f"{name} Karakter Paketini İhraç Et",
+            initialfile=f"{name.lower()}_pack.zip",
+            filetypes=[("ZIP dosyaları", "*.zip"), ("Tüm dosyalar", "*.*")]
+        )
+        if path:
+            self._save_char_map()
+            from src.pipeline.character_db import CharacterDatabase
+            db = CharacterDatabase.get_instance()
+            success = db.export_character_pack(name, path)
+            if success:
+                self._log(f"[CHAR] {name} paketi ihraç edildi: {Path(path).name}", "info")
+                self._set_status(f"{name} paketi ihraç edildi.")
+            else:
+                self._log(f"[HATA] {name} paketi ihraç edilemedi.", "error")
+                self._set_status("İhraç hatası.")
+
+    def _import_char_pack(self):
+        path = filedialog.askopenfilename(
+            title="Karakter Paketi İçe Aktar (.zip)",
+            filetypes=[("ZIP dosyaları", "*.zip"), ("Tüm dosyalar", "*.*")]
+        )
+        if path:
+            from src.pipeline.character_db import CharacterDatabase
+            db = CharacterDatabase.get_instance()
+            import_name = db.import_character_pack(path)
+            if import_name:
+                self._log(f"[CHAR] Karakter paketi içe aktarıldı: {import_name}", "info")
+                self._set_status(f"{import_name} içe aktarıldı.")
+                self._rebuild_char_rows_from_db()
+            else:
+                self._log("[HATA] Karakter paketi içe aktarılamadı.", "error")
+                self._set_status("İthalat hatası.")
+
+    def _rebuild_char_rows_from_db(self):
+        for row in self._char_rows:
+            row["frame"].destroy()
+        self._char_rows.clear()
+        
+        from src.pipeline.character_db import CharacterDatabase
+        db = CharacterDatabase.get_instance()
+        for char in db.list_characters():
+            self._add_char_row(
+                name=char["name"],
+                pth=char.get("rvc_model") or "",
+                color=char.get("color") or "#ffffff"
+            )
+
     def _save_char_map(self):
-        mapping = {
-            row["name"].get().strip(): row["pth"].get().strip()
-            for row in self._char_rows
-            if row["name"].get().strip() and row["pth"].get().strip()
-        }
-        self._config["characters"] = mapping
+        from src.pipeline.character_db import CharacterDatabase
+        db = CharacterDatabase.get_instance()
+
+        config_characters = {}
+        for row in self._char_rows:
+            name = row["name"].get().strip()
+            pth = row["pth"].get().strip()
+            color = row["color"].get().strip()
+            if not name:
+                continue
+
+            config_characters[name] = pth
+            
+            existing = db.get_character(name)
+            rvc_index = None
+            if pth:
+                pth_path = Path(pth)
+                idx_candidates = list(pth_path.parent.glob(f"{pth_path.stem}*.index"))
+                if idx_candidates:
+                    rvc_index = str(idx_candidates[0])
+            
+            db.add_character(
+                name=name,
+                rvc_model=pth or None,
+                rvc_index=rvc_index,
+                color=color,
+                avatar=existing.get("avatar") if existing else "assets/avatars/default.png",
+                regex_patterns=existing.get("regex_patterns") if existing else None,
+                tts_refs=existing.get("tts_refs") if existing else {}
+            )
+
+        current_names = {row["name"].get().strip().lower() for row in self._char_rows if row["name"].get().strip()}
+        for char in db.list_characters():
+            if char["name"].lower() not in current_names:
+                db.remove_character(char["name"])
+
+        self._config["characters"] = config_characters
         self._save_config(self._config)
+
         if self._rvc:
-            self._rvc.update_character_map(mapping)
+            self._rvc.update_character_map(config_characters)
             self._rvc.preload_all()
         if self._tts:
             self._tts.update_character_refs(self._config.get("character_refs", {}))
-        self._log(f"Karakter haritasi kaydedildi ({len(mapping)} karakter).", "info")
-        self._set_status("Karakter haritasi guncellendi.")
+
+        self._log(f"Karakterler veritabanına kaydedildi ({len(current_names)} karakter).", "info")
+        self._set_status("Karakterler güncellendi.")
 
     def _on_char_refs_saved(self, name: str, refs: dict):
         self._config.setdefault("character_refs", {})[name] = refs
@@ -352,6 +854,18 @@ class UMAYApp(ctk.CTk):
         from src.llm.analyzer import get_analyzer
         from src.audio.ducking import AudioDucker
         from src.pipeline.queue_runner import QueueRunner
+        from src.utils.vram_manager import VRAMManager
+        from src.utils.system_monitor import SystemMonitor
+
+        # VRAM Yöneticisini yapılandır
+        VRAMManager.get_instance().configure(self._config)
+
+        # Sistem Kaynak Monitörünü başlat
+        self._sys_monitor = SystemMonitor(
+            interval=2.0,
+            callback=self._on_sys_monitor_stats
+        )
+        self._sys_monitor.start()
 
         ocr_cfg = self._config.get("ocr", {})
         dk_cfg  = self._config.get("ducking", {})
@@ -392,6 +906,7 @@ class UMAYApp(ctk.CTk):
             analyzer=self._analyzer,
             ducker=self._ducker,
             on_log=self._log,
+            on_stats=self._update_timing_bar,
         )
 
         self._monitor = SubtitleMonitor(
@@ -417,57 +932,40 @@ class UMAYApp(ctk.CTk):
 
     def _on_tts_ready(self, ok: bool):
         if ok:
-            self._tts_status.configure(text="TTS: Hazır ✓", text_color="#4CAF50")
+            self._update_card("TTS", "Hazır ✓", COLORS["accent_green"])
         else:
-            self._tts_status.configure(text="TTS: Hata ✗", text_color="#e74c3c")
+            self._update_card("TTS", "Hata ✗", COLORS["accent_red"])
 
     def _on_rvc_ready(self, ok: bool):
         if ok:
             n = self._rvc.cached_model_count() if self._rvc else 0
-            label = f"RVC: {n} model ✓" if n > 0 else "RVC: Hazir ✓"
-            self._rvc_status.configure(text=label, text_color="#4CAF50")
+            label = f"{n} model ✓" if n > 0 else "Hazır ✓"
+            self._update_card("RVC", label, COLORS["accent_green"])
         else:
-            self._rvc_status.configure(text="RVC: Hata ✗", text_color="#e74c3c")
+            self._update_card("RVC", "Hata ✗", COLORS["accent_red"])
 
     def _on_translate_ready(self, ok: bool):
         if ok:
-            self._cev_btn.configure(
-                text="CEV: Acik ✓",
-                fg_color=("#2d7d46", "#27ae60"), hover_color=("#235f36", "#1e8449"),
-            )
+            self._update_card("CEV", "Açık ✓", COLORS["accent_green"])
         else:
-            self._cev_btn.configure(
-                text="CEV: Hata ✗",
-                fg_color=("#c0392b", "#e74c3c"), hover_color=("#922b21", "#c0392b"),
-            )
+            self._update_card("CEV", "Hata ✗", COLORS["accent_red"])
 
     def _on_analyzer_ready(self, ok: bool):
         if ok:
-            self._duygu_btn.configure(
-                text="DUYGU: Acik ✓",
-                fg_color=("#2d7d46", "#27ae60"), hover_color=("#235f36", "#1e8449"),
-            )
+            self._update_card("DUYGU", "Açık ✓", COLORS["accent_green"])
         else:
-            self._duygu_btn.configure(
-                text="DUYGU: Hata ✗",
-                fg_color=("#c0392b", "#e74c3c"), hover_color=("#922b21", "#c0392b"),
-            )
-        self._log(f"Duygu modeli {'yuklu' if ok else 'hata'}.", "info")
+            self._update_card("DUYGU", "Hata ✗", COLORS["accent_red"])
 
     # ─────────────────── Modül Toggle'ları ───────────────────────────
 
     def _toggle_translate(self):
-        """Çeviri modülünü açar/kapatır; kapatınca modeli bellekten siler."""
         enabled = self._config.get("translate", {}).get("enabled", False)
         new_state = not enabled
         self._config.setdefault("translate", {})["enabled"] = new_state
         self._save_config(self._config)
 
         if new_state:
-            self._cev_btn.configure(
-                text="CEV: Yukleniyor…",
-                fg_color=("orange", "#e67e22"), hover_color=("orange", "#e67e22"),
-            )
+            self._update_card("CEV", "Yükleniyor…", COLORS["accent_orange"])
             if self._translator:
                 self._translator.update_settings(enabled=True)
                 self._translator.load_async(
@@ -476,24 +974,17 @@ class UMAYApp(ctk.CTk):
         else:
             if self._translator:
                 self._translator.update_settings(enabled=False)
-            self._cev_btn.configure(
-                text="CEV: Kapalı",
-                fg_color=("gray75", "gray30"), hover_color=("gray65", "gray25"),
-            )
-            self._log("Ceviri kapatildi, bellek serbest.", "info")
+            self._update_card("CEV", "Kapalı", COLORS["text_muted"])
+            self._log("Çeviri kapatıldı, bellek serbest.", "info")
 
     def _toggle_analyzer(self):
-        """Duygu analizi modülünü açar/kapatır; kapatınca modeli bellekten siler."""
         enabled = self._config.get("sentiment", {}).get("enabled", False)
         new_state = not enabled
         self._config.setdefault("sentiment", {})["enabled"] = new_state
         self._save_config(self._config)
 
         if new_state:
-            self._duygu_btn.configure(
-                text="DUYGU: Yukleniyor…",
-                fg_color=("orange", "#e67e22"), hover_color=("orange", "#e67e22"),
-            )
+            self._update_card("DUYGU", "Yükleniyor…", COLORS["accent_orange"])
             if self._analyzer:
                 self._analyzer.update_settings(enabled=True)
                 self._analyzer.load_async(
@@ -502,42 +993,29 @@ class UMAYApp(ctk.CTk):
         else:
             if self._analyzer:
                 self._analyzer.update_settings(enabled=False)
-            self._duygu_btn.configure(
-                text="DUYGU: Kapalı",
-                fg_color=("gray75", "gray30"), hover_color=("gray65", "gray25"),
-            )
-            self._log("Duygu analizi kapatildi, bellek serbest.", "info")
+            self._update_card("DUYGU", "Kapalı", COLORS["text_muted"])
+            self._log("Duygu analizi kapatıldı.", "info")
 
     def _toggle_rvc(self):
-        """RVC modülünü açar/kapatır; kapatınca tüm model önbelleğini temizler."""
         currently_open = bool(self._rvc and self._rvc.cached_model_count() > 0)
         if currently_open:
             if self._rvc:
                 self._rvc.unload_all()
-            self._rvc_toggle_btn.configure(
-                text="RVC: Kapalı",
-                fg_color=("gray75", "gray30"), hover_color=("gray65", "gray25"),
-            )
-            self._rvc_status.configure(text="RVC: Bellek Bos", text_color="gray")
-            self._log("RVC onbellegi temizlendi, VRAM serbest.", "info")
+            self._update_card("RVC", "Kapalı", COLORS["text_muted"])
+            self._log("RVC önbelleği temizlendi, VRAM serbest.", "info")
         else:
-            self._rvc_toggle_btn.configure(
-                text="RVC: Yukleniyor…",
-                fg_color=("orange", "#e67e22"), hover_color=("orange", "#e67e22"),
-            )
+            self._update_card("RVC", "Yükleniyor…", COLORS["accent_orange"])
             if self._rvc:
                 def _on_preload_done():
                     n = self._rvc.cached_model_count()
-                    label = f"RVC: {n} model" if n else "RVC: Hazir"
-                    self.after(0, lambda: self._rvc_toggle_btn.configure(
-                        text=label + " ✓",
-                        fg_color=("#2d7d46", "#27ae60"), hover_color=("#235f36", "#1e8449"),
-                    ))
-                import threading as _t
-                _t.Thread(target=lambda: (self._rvc.preload_all(), _on_preload_done()), daemon=True).start()
+                    label = f"{n} model ✓" if n else "Hazır ✓"
+                    self.after(0, lambda: self._update_card("RVC", label, COLORS["accent_green"]))
+                threading.Thread(
+                    target=lambda: (self._rvc.preload_all(), _on_preload_done()),
+                    daemon=True,
+                ).start()
 
     def _toggle_ducking(self):
-        """Audio Ducking'i açar/kapatır."""
         enabled = self._config.get("ducking", {}).get("enabled", False)
         new_state = not enabled
         self._config.setdefault("ducking", {})["enabled"] = new_state
@@ -545,75 +1023,46 @@ class UMAYApp(ctk.CTk):
         if self._ducker:
             self._ducker.update_settings(enabled=new_state)
         if new_state:
-            self._duck_btn.configure(
-                text="DUCK: Acik",
-                fg_color=("#2d7d46", "#27ae60"), hover_color=("#235f36", "#1e8449"),
-            )
+            self._update_card("DUCK", "Açık", COLORS["accent_green"])
         else:
-            self._duck_btn.configure(
-                text="DUCK: Kapalı",
-                fg_color=("gray75", "gray30"), hover_color=("gray65", "gray25"),
-            )
+            self._update_card("DUCK", "Kapalı", COLORS["text_muted"])
 
     def _refresh_indicators(self):
-        """Uygulama baslangindan veya preset yuklemesinden sonra tum toglelari gunceller."""
+        # TTS
+        if self._tts and self._tts.is_ready():
+            self._update_card("TTS", "Hazır ✓", COLORS["accent_green"])
+
+        # Translate
         tr_on = self._config.get("translate", {}).get("enabled", False)
         if tr_on and self._translator and self._translator.is_ready():
-            self._cev_btn.configure(
-                text="CEV: Acik ✓",
-                fg_color=("#2d7d46", "#27ae60"), hover_color=("#235f36", "#1e8449"),
-            )
+            self._update_card("CEV", "Açık ✓", COLORS["accent_green"])
         elif tr_on:
-            self._cev_btn.configure(
-                text="CEV: Yukleniyor…",
-                fg_color=("orange", "#e67e22"), hover_color=("orange", "#e67e22"),
-            )
+            self._update_card("CEV", "Yükleniyor…", COLORS["accent_orange"])
         else:
-            self._cev_btn.configure(
-                text="CEV: Kapalı",
-                fg_color=("gray75", "gray30"), hover_color=("gray65", "gray25"),
-            )
+            self._update_card("CEV", "Kapalı", COLORS["text_muted"])
 
+        # Sentiment
         sent_on = self._config.get("sentiment", {}).get("enabled", False)
         if sent_on and self._analyzer and self._analyzer.is_ready():
-            self._duygu_btn.configure(
-                text="DUYGU: Acik ✓",
-                fg_color=("#2d7d46", "#27ae60"), hover_color=("#235f36", "#1e8449"),
-            )
+            self._update_card("DUYGU", "Açık ✓", COLORS["accent_green"])
         elif sent_on:
-            self._duygu_btn.configure(
-                text="DUYGU: Yukleniyor…",
-                fg_color=("orange", "#e67e22"), hover_color=("orange", "#e67e22"),
-            )
+            self._update_card("DUYGU", "Yükleniyor…", COLORS["accent_orange"])
         else:
-            self._duygu_btn.configure(
-                text="DUYGU: Kapalı",
-                fg_color=("gray75", "gray30"), hover_color=("gray65", "gray25"),
-            )
+            self._update_card("DUYGU", "Kapalı", COLORS["text_muted"])
 
+        # Ducking
         dk_on = self._config.get("ducking", {}).get("enabled", False)
         if dk_on:
-            self._duck_btn.configure(
-                text="DUCK: Acik",
-                fg_color=("#2d7d46", "#27ae60"), hover_color=("#235f36", "#1e8449"),
-            )
+            self._update_card("DUCK", "Açık", COLORS["accent_green"])
         else:
-            self._duck_btn.configure(
-                text="DUCK: Kapalı",
-                fg_color=("gray75", "gray30"), hover_color=("gray65", "gray25"),
-            )
+            self._update_card("DUCK", "Kapalı", COLORS["text_muted"])
 
+        # RVC
         rvc_n = self._rvc.cached_model_count() if self._rvc else 0
         if rvc_n > 0:
-            self._rvc_toggle_btn.configure(
-                text=f"RVC: {rvc_n} model ✓",
-                fg_color=("#2d7d46", "#27ae60"), hover_color=("#235f36", "#1e8449"),
-            )
+            self._update_card("RVC", f"{rvc_n} model ✓", COLORS["accent_green"])
         else:
-            self._rvc_toggle_btn.configure(
-                text="RVC: Kapalı",
-                fg_color=("gray75", "gray30"), hover_color=("gray65", "gray25"),
-            )
+            self._update_card("RVC", "Model Yok", COLORS["text_muted"])
 
     # ──────────────────────── Pipeline Kontrolü ──────────────────────
 
@@ -627,8 +1076,16 @@ class UMAYApp(ctk.CTk):
         self._pipeline_running = True
         self._start_btn.configure(
             text="■  Durdur",
-            fg_color=("#c0392b", "#e74c3c"), hover_color=("#922b21", "#c0392b"),
+            fg_color=COLORS["accent_red"],
+            hover_color="#d73a3a",
         )
+        self._pipeline_status_label.configure(
+            text="Çalışıyor",
+            text_color=COLORS["accent_green"],
+        )
+        self._pulse_active = True
+        self._animate_pulse()
+
         self._runner.start()
         self._monitor.start()
         self._log("Pipeline başlatıldı.", "info")
@@ -647,10 +1104,18 @@ class UMAYApp(ctk.CTk):
 
     def _stop_pipeline(self):
         self._pipeline_running = False
+        self._pulse_active = False
         self._start_btn.configure(
             text="▶  Başlat",
-            fg_color=("#1a6aaf", "#2980b9"), hover_color=("#145288", "#1f6391"),
+            fg_color=COLORS["accent_blue"],
+            hover_color="#4a90d9",
         )
+        self._pipeline_status_label.configure(
+            text="Durduruldu",
+            text_color=COLORS["text_muted"],
+        )
+        self._pulse_dot.configure(text_color=COLORS["text_muted"])
+
         if self._monitor:
             self._monitor.stop()
         if self._runner:
@@ -658,8 +1123,31 @@ class UMAYApp(ctk.CTk):
         self._log("Pipeline durduruldu.", "info")
         self._set_status("Durduruldu.")
 
+    def _animate_pulse(self):
+        """Pulsating yesil dot animasyonu."""
+        if not self._pulse_active:
+            return
+        current = self._pulse_dot.cget("text_color")
+        if current == COLORS["accent_green"]:
+            self._pulse_dot.configure(text_color="#1a5c2e")
+        else:
+            self._pulse_dot.configure(text_color=COLORS["accent_green"])
+        self.after(800, self._animate_pulse)
+
     def _on_subtitle_detected(self, speaker: str, text: str):
-        self.after(0, lambda: self._subtitle_var.set(f"{speaker}: {text}"))
+        from src.pipeline.character_db import CharacterDatabase
+        db = CharacterDatabase.get_instance()
+        detected_sp, cleaned_tx = db.detect_character(text)
+        
+        if detected_sp:
+            speaker = detected_sp
+            text = cleaned_tx
+        else:
+            char_info = db.get_character(speaker)
+            if char_info:
+                speaker = char_info["name"]
+
+        self.after(0, lambda: self._update_subtitle_display(speaker, text))
         self._log(f"[OCR] {speaker}: {text}", "ocr")
         if self._runner:
             self._runner.push(speaker, text)
@@ -667,7 +1155,6 @@ class UMAYApp(ctk.CTk):
     # ─────────────────── Preset Yükleme ──────────────────────────────
 
     def _apply_preset(self, data: dict):
-        """Preset verisini mevcut oturuma uygular."""
         region = data.get("region")
         if region:
             self._on_region_selected(tuple(region), from_selector=False)
@@ -707,7 +1194,7 @@ class UMAYApp(ctk.CTk):
         self._save_config(self._config)
         self._settings_panel.load_config(self._config)
         self._refresh_indicators()
-        self._log(f"Profil yüklendi.", "info")
+        self._log("Profil yüklendi.", "info")
         self._set_status("Profil uygulandı.")
 
     def _rebuild_char_rows(self, chars: dict):
@@ -720,12 +1207,6 @@ class UMAYApp(ctk.CTk):
     # ─────────────────── Test Yakalama ───────────────────────────────
 
     def _test_capture(self):
-        """
-        Mevcut bölgeden ekran görüntüsü alır; ham ve işlenmiş görselleri
-        output/ klasörüne kaydeder, OCR sonucunu log'a yazar.
-        """
-        import threading as _t
-
         def _run():
             if not self._capture:
                 self._log("[TEST] Capture modülü henüz hazır değil.", "error")
@@ -733,9 +1214,8 @@ class UMAYApp(ctk.CTk):
 
             self._log("[TEST] Ekran yakalanıyor…", "info")
             from src.ocr.capture import preprocess_image
-            from pathlib import Path
 
-            out_dir = Path(__file__).parent.parent.parent / "output"
+            out_dir = BASE_DIR / "output"
             out_dir.mkdir(exist_ok=True)
 
             img = self._capture.capture()
@@ -750,23 +1230,19 @@ class UMAYApp(ctk.CTk):
             raw_path = out_dir / "debug_raw.png"
             pre_path = out_dir / "debug_preprocessed.png"
             img.save(str(raw_path))
-            self._log(f"[TEST] Ham görüntü kaydedildi: {raw_path}", "info")
+            self._log(f"[TEST] Ham görüntü: {raw_path}", "info")
 
             pre = preprocess_image(img.copy())
             pre.save(str(pre_path))
-            self._log(f"[TEST] İşlenmiş görüntü kaydedildi: {pre_path}", "info")
+            self._log(f"[TEST] İşlenmiş: {pre_path}", "info")
 
             text = self._capture.extract_text(img)
             if text:
-                self._log(f"[TEST] OCR sonucu: {text[:200].replace(chr(10), ' | ')}", "ocr")
+                self._log(f"[TEST] OCR: {text[:200].replace(chr(10), ' | ')}", "ocr")
             else:
-                self._log(
-                    "[TEST] OCR hiç metin bulamadı. "
-                    "output/debug_raw.png ve debug_preprocessed.png dosyalarını inceleyin.",
-                    "error",
-                )
+                self._log("[TEST] OCR hiç metin bulamadı.", "error")
 
-        _t.Thread(target=_run, daemon=True).start()
+        threading.Thread(target=_run, daemon=True).start()
 
     # ─────────────────── Bölge Seçimi ────────────────────────────────
 
@@ -775,17 +1251,13 @@ class UMAYApp(ctk.CTk):
         RegionSelector(self, callback=self._on_region_selected)
 
     def _scale_region_for_mss(self, region: tuple) -> tuple:
-        """
-        Tkinter (mantıksal piksel) koordinatlarını mss (fiziksel piksel) koordinatlarına
-        dönüştürür. Windows DPI ölçeklemesinde tkinter ile mss arasındaki uyuşmazlığı giderir.
-        """
         if not self._capture or not region:
             return region
         try:
             monitors = self._capture._sct.monitors
             if len(monitors) < 2:
                 return region
-            mon = monitors[1]  # primary monitor
+            mon = monitors[1]
             tk_w = self.winfo_screenwidth()
             tk_h = self.winfo_screenheight()
             if tk_w <= 0 or tk_h <= 0:
@@ -808,18 +1280,16 @@ class UMAYApp(ctk.CTk):
 
     def _on_region_selected(self, region: Optional[tuple], from_selector: bool = True):
         if region:
-            # Sadece RegionSelector'dan gelen tkinter koordinatlarını mss'e dönüştür;
-            # config/preset'ten gelenler zaten mss formatında
             mss_region = self._scale_region_for_mss(region) if from_selector else region
             self._region = mss_region
             l, t, w, h = mss_region
-            self._region_label.configure(text=f"Bölge: {w}×{h} @ ({l},{t})")
+            self._region_label.configure(text=f"📍 Bölge: {w}×{h} @ ({l},{t})")
             if self._capture:
                 self._capture.set_region_from_tuple(mss_region)
             self._config.setdefault("ocr", {})["region"] = list(mss_region)
         else:
             self._region = None
-            self._region_label.configure(text="Bölge: Tam Ekran")
+            self._region_label.configure(text="📍 Bölge: Tam Ekran")
             if self._capture:
                 self._capture.set_region_from_tuple(None)
             self._config.setdefault("ocr", {})["region"] = None
@@ -837,12 +1307,12 @@ class UMAYApp(ctk.CTk):
 
     def _on_default_model_selected(self, model_path: Optional[str], index_path: Optional[str]):
         if not model_path:
-            self._rvc_status.configure(text="RVC: Model Yok", text_color="gray")
+            self._update_card("RVC", "Model Yok", COLORS["text_muted"])
             return
         self._config.setdefault("rvc", {})["model_path"] = model_path
         self._config.setdefault("rvc", {})["index_path"] = index_path
         self._save_config(self._config)
-        self._rvc_status.configure(text="RVC: Yükleniyor…", text_color="orange")
+        self._update_card("RVC", "Yükleniyor…", COLORS["accent_orange"])
         if self._rvc:
             self._rvc.set_default_model_async(
                 model_path, index_path,
@@ -903,7 +1373,7 @@ class UMAYApp(ctk.CTk):
 
         tts_local = tts_s.get("local_model_dir")
         if tts_local and self._tts:
-            self._tts_status.configure(text="TTS: Yukleniyor...", text_color="orange")
+            self._update_card("TTS", "Yükleniyor…", COLORS["accent_orange"])
             self._tts.update_model_async(
                 tts_local,
                 on_done=lambda ok: self.after(0, lambda: self._on_tts_ready(ok)),
@@ -918,6 +1388,11 @@ class UMAYApp(ctk.CTk):
 
         for section, data in settings.items():
             self._config.setdefault(section, {}).update(data)
+        
+        # VRAM Yöneticisini yeni ayarlarla yapılandır
+        from src.utils.vram_manager import VRAMManager
+        VRAMManager.get_instance().configure(self._config)
+
         self._save_config(self._config)
         self._refresh_indicators()
         self._log("Ayarlar kaydedildi.", "info")
@@ -936,8 +1411,23 @@ class UMAYApp(ctk.CTk):
     def _set_status(self, msg: str):
         self.after(0, lambda: self._status_var.set(msg))
 
+    def _on_sys_monitor_stats(self, stats: dict):
+        cpu = stats.get("cpu", 0.0)
+        ram = stats.get("ram_percent", 0.0)
+        gpu = stats.get("gpu", 0.0)
+        vram_used = stats.get("vram_used", 0.0)
+        vram_total = stats.get("vram_total", 0.0)
+        perf_text = f"💻 CPU: {cpu:.0f}% | RAM: {ram:.0f}% | 🎮 GPU: {gpu:.0f}% | VRAM: {vram_used:.0f}/{vram_total:.0f}MB"
+        self.after(0, lambda: self._perf_var.set(perf_text))
+
     def _on_close(self):
+        self._pulse_active = False
         self._stop_pipeline()
+        if hasattr(self, "_sys_monitor") and self._sys_monitor:
+            try:
+                self._sys_monitor.stop()
+            except Exception:
+                pass
         if self._capture:
             self._capture.close()
         self.destroy()

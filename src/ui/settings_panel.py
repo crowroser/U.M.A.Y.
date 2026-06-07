@@ -19,7 +19,7 @@ class SettingsPanel(ctk.CTkFrame):
         )
         self._notebook = ctk.CTkTabview(self)
         self._notebook.pack(fill="both", expand=True, padx=8, pady=4)
-        for t in ["OCR", "TTS", "RVC", "Ceviri", "Duygu", "Ses"]:
+        for t in ["OCR", "TTS", "RVC", "Ceviri", "Duygu", "Ses", "Bellek"]:
             self._notebook.add(t)
         self._build_ocr_tab()
         self._build_tts_tab()
@@ -27,6 +27,7 @@ class SettingsPanel(ctk.CTkFrame):
         self._build_translate_tab()
         self._build_sentiment_tab()
         self._build_audio_tab()
+        self._build_vram_tab()
         ctk.CTkButton(self, text="Kaydet", command=self._save).pack(pady=12, padx=16, fill="x")
 
     # ── OCR ──────────────────────────────────────────────────────────
@@ -311,6 +312,11 @@ class SettingsPanel(ctk.CTkFrame):
                 "level": self._duck_level.get(),
                 "target_process": self._duck_process.get().strip(),
             },
+            "vram": {
+                "enabled": self._vram_enabled.get(),
+                "auto_detect": self._vram_auto.get(),
+                "budget_mb": float(self._vram_budget.get().strip()) if self._vram_budget.get().strip() else 3000.0,
+            }
         })
 
     def load_config(self, config: dict):
@@ -320,6 +326,7 @@ class SettingsPanel(ctk.CTkFrame):
         tr   = config.get("translate", {})
         sent = config.get("sentiment", {})
         dk   = config.get("ducking", {})
+        vram = config.get("vram", {})
 
         if ocr.get("tesseract_path"):
             self._tess_path.delete(0, "end")
@@ -383,6 +390,32 @@ class SettingsPanel(ctk.CTkFrame):
         if dk.get("target_process"):
             self._duck_process.delete(0, "end")
             self._duck_process.insert(0, dk["target_process"])
+
+        self._vram_enabled.set(vram.get("enabled", True))
+        self._vram_auto.set(vram.get("auto_detect", True))
+        self._vram_budget.delete(0, "end")
+        self._vram_budget.insert(0, str(vram.get("budget_mb", 3000.0)))
+        self._toggle_vram_auto()
+
+    def _build_vram_tab(self):
+        tab = self._notebook.tab("Bellek")
+        
+        self._vram_enabled = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(tab, text="VRAM Yönetimini Etkinleştir", variable=self._vram_enabled).pack(anchor="w", padx=12, pady=8)
+        
+        self._vram_auto = ctk.BooleanVar(value=True)
+        self._vram_auto_cb = ctk.CTkCheckBox(tab, text="Limitleri Otomatik Tespit Et", variable=self._vram_auto, command=self._toggle_vram_auto)
+        self._vram_auto_cb.pack(anchor="w", padx=12, pady=8)
+        
+        ctk.CTkLabel(tab, text="VRAM Bütçesi (MB):").pack(anchor="w", padx=12, pady=(12, 0))
+        self._vram_budget = ctk.CTkEntry(tab, placeholder_text="3000")
+        self._vram_budget.pack(fill="x", padx=12, pady=(2, 8))
+
+    def _toggle_vram_auto(self):
+        if self._vram_auto.get():
+            self._vram_budget.configure(state="disabled")
+        else:
+            self._vram_budget.configure(state="normal")
 
     def update_monitor_list(self, count: int):
         self._monitor_combo.configure(values=[str(i) for i in range(1, count + 1)])

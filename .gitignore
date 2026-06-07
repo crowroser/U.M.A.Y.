@@ -60,3 +60,6 @@ Desktop.ini
 # Test dosyaları
 test_write_access.txt
 *.log
+
+# Karakter veritabanı
+characters_db.json

@@ -115,43 +115,74 @@ class TTSGenerator:
     def _notify(self, msg: str):
         self._on_status(msg)
 
+    def unload(self):
+        """TTS modelini VRAM'den bosaltir."""
+        with self._lock:
+            self._tts = None
+            self._loaded = False
+            self._notify("TTS modeli bellekten bosaltildi.")
+
+    def _load_direct(self) -> bool:
+        try:
+            import torch
+            _orig_torch_load = torch.load
+            def _patched_torch_load(*args, **kwargs):
+                kwargs.setdefault("weights_only", False)
+                return _orig_torch_load(*args, **kwargs)
+            torch.load = _patched_torch_load
+
+            from TTS.api import TTS
+
+            if self.local_model_dir:
+                local = Path(self.local_model_dir)
+                model_pth = local / "model.pth"
+                config_pth = local / "config.json"
+                self._notify(f"Yerel model yukleniyor: {local.name}")
+                self._tts = TTS(
+                    model_path=str(model_pth),
+                    config_path=str(config_pth),
+                ).to(self._device)
+            else:
+                self._notify(f"TTS modeli yukleniyor ({self._device}): {self.model_name}")
+                self._tts = TTS(self.model_name).to(self._device)
+
+            self._loaded = True
+            self._notify("TTS hazir.")
+            return True
+        except ImportError as e:
+            self._notify(f"HATA: TTS import basarisiz: {e}")
+            return False
+        except Exception as e:
+            self._notify(f"TTS yukleme hatasi: {e}")
+            return False
+
     def load(self) -> bool:
         """Modeli VRAM'e yukler (bloklayan)."""
         with self._lock:
             if self._loaded:
+                from src.utils.vram_manager import VRAMManager
+                VRAMManager.get_instance().touch_model(self.model_name)
                 return True
-            try:
-                import torch
-                _orig_torch_load = torch.load
-                def _patched_torch_load(*args, **kwargs):
-                    kwargs.setdefault("weights_only", False)
-                    return _orig_torch_load(*args, **kwargs)
-                torch.load = _patched_torch_load
 
-                from TTS.api import TTS
+            from src.utils.vram_manager import VRAMManager
+            mgr = VRAMManager.get_instance()
 
-                if self.local_model_dir:
-                    local = Path(self.local_model_dir)
-                    model_pth = local / "model.pth"
-                    config_pth = local / "config.json"
-                    self._notify(f"Yerel model yukleniyor: {local.name}")
-                    self._tts = TTS(
-                        model_path=str(model_pth),
-                        config_path=str(config_pth),
-                    ).to(self._device)
-                else:
-                    self._notify(f"TTS modeli yukleniyor ({self._device}): {self.model_name}")
-                    self._tts = TTS(self.model_name).to(self._device)
+            def unload_cb():
+                self.unload()
 
-                self._loaded = True
-                self._notify("TTS hazir.")
-                return True
-            except ImportError as e:
-                self._notify(f"HATA: TTS import basarisiz: {e}")
-                return False
-            except Exception as e:
-                self._notify(f"TTS yukleme hatasi: {e}")
-                return False
+            mgr.register_model(
+                model_id=self.model_name,
+                model_type="TTS",
+                unload_cb=unload_cb,
+                estimated_vram_mb=1200.0,
+            )
+
+            success = mgr.request_load(
+                model_id=self.model_name,
+                load_fn=self._load_direct,
+                estimated_vram_mb=1200.0,
+            )
+            return success
 
     def load_async(self, on_done: Optional[Callable[[bool], None]] = None):
         def _run():
@@ -207,9 +238,8 @@ class TTSGenerator:
         if not text:
             return None
 
-        if not self._loaded:
-            if not self.load():
-                return None
+        if not self.load():
+            return None
 
         out = output_path or str(TTS_OUTPUT_PATH)
         lang = language or self.language
@@ -238,6 +268,85 @@ class TTSGenerator:
             except Exception as e:
                 self._notify(f"TTS sentez hatasi: {e}")
                 return None
+
+    def synthesize_to_array(
+        self,
+        text: str,
+        speaker: Optional[str] = None,
+        emotion: Optional[str] = None,
+        speed_delta: float = 0.0,
+        language: Optional[str] = None,
+    ) -> Optional[tuple]:
+        """
+        Metni sese cevirir, dosya yazmadan dogrudan (sample_rate, numpy_array) doner.
+        Dosya I/O'yu atlayarak ~50-100ms kazandirir.
+        Basarisiz olursa None doner.
+        """
+        import numpy as np
+
+        text = text.strip()
+        if not text:
+            return None
+
+        if not self.load():
+            return None
+
+        lang = language or self.language
+        effective_speed = max(0.5, min(2.5, self.speed + speed_delta))
+        ref_wav = self._resolve_ref(speaker, emotion)
+
+        with self._lock:
+            try:
+                self._notify(
+                    f"TTS [{emotion or 'neutral'}] {speaker or ''}: "
+                    f"'{text[:50]}{'...' if len(text) > 50 else ''}'"
+                )
+                kwargs: dict = {
+                    "text": text,
+                    "language": lang,
+                    "speed": effective_speed,
+                }
+                if ref_wav:
+                    kwargs["speaker_wav"] = ref_wav
+                else:
+                    kwargs["speaker"] = "Claribel Dervla"
+
+                # Coqui TTS .tts() metodu float list doner (dosya yazmaz)
+                wav_list = self._tts.tts(**kwargs)
+
+                if wav_list is None or len(wav_list) == 0:
+                    return None
+
+                # float list -> int16 numpy array
+                wav_array = np.array(wav_list, dtype=np.float32)
+                # Normalize ve int16'ya cevir
+                peak = np.abs(wav_array).max()
+                if peak > 0:
+                    wav_array = wav_array / peak
+                wav_int16 = (wav_array * 32767).astype(np.int16)
+
+                # XTTS-v2 varsayilan sample rate: 24000
+                sample_rate = 24000
+                if hasattr(self._tts, "synthesizer") and hasattr(self._tts.synthesizer, "output_sample_rate"):
+                    sample_rate = self._tts.synthesizer.output_sample_rate
+
+                return (sample_rate, wav_int16)
+            except Exception as e:
+                self._notify(f"TTS array sentez hatasi: {e}")
+                # Fallback: dosya uzerinden
+                try:
+                    import scipy.io.wavfile as wavfile
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                        tmp_path = tmp.name
+                    kwargs["file_path"] = tmp_path
+                    self._tts.tts_to_file(**kwargs)
+                    sr, data = wavfile.read(tmp_path)
+                    os.remove(tmp_path)
+                    return (sr, data)
+                except Exception as e2:
+                    self._notify(f"TTS fallback hatasi: {e2}")
+                    return None
 
     def update_model(self, local_model_dir: str) -> bool:
         """Yerel HF modelini degistirir; mevcut modeli bellekten atar ve yeniden yukler."""

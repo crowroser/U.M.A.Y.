@@ -161,29 +161,61 @@ class RVCConverter:
         Thread-safe: ayni model icin yalnizca tek yukleme yapilir.
         """
         if pth in self._model_cache:
+            from src.utils.vram_manager import VRAMManager
+            VRAMManager.get_instance().touch_model(pth)
             return self._model_cache[pth]
 
         load_lock, _ = self._get_locks(pth)
         with load_lock:
             # Double-checked locking: lock alindiktan sonra tekrar kontrol
             if pth in self._model_cache:
+                from src.utils.vram_manager import VRAMManager
+                VRAMManager.get_instance().touch_model(pth)
                 return self._model_cache[pth]
-            try:
-                self._notify(f"RVC yukleniyor: {Path(pth).name}")
-                from rvc_python.infer import RVCInference
-                version = _detect_model_version(pth)
-                self._notify(f"RVC model versiyonu: {version}")
-                rvc = RVCInference(device=self._device)
-                rvc.load_model(pth, version=version, index_path=index or "")
-                self._model_cache[pth] = rvc
-                self._notify(f"RVC hazir: {Path(pth).name}")
-                return rvc
-            except ImportError:
-                self._notify("HATA: rvc-python bulunamadi. pip install rvc-python")
-                return None
-            except Exception as e:
-                self._notify(f"RVC yukleme hatasi ({Path(pth).name}): {e}")
-                return None
+
+            from src.utils.vram_manager import VRAMManager
+            mgr = VRAMManager.get_instance()
+
+            def unload_cb():
+                with self._meta_lock:
+                    if pth in self._model_cache:
+                        del self._model_cache[pth]
+                        self._notify(f"RVC model bellekten bosaltildi: {Path(pth).name}")
+
+            mgr.register_model(
+                model_id=pth,
+                model_type="RVC",
+                unload_cb=unload_cb,
+                estimated_vram_mb=400.0,
+            )
+
+            def load_fn() -> bool:
+                try:
+                    self._notify(f"RVC yukleniyor: {Path(pth).name}")
+                    from rvc_python.infer import RVCInference
+                    version = _detect_model_version(pth)
+                    self._notify(f"RVC model versiyonu: {version}")
+                    rvc = RVCInference(device=self._device)
+                    rvc.load_model(pth, version=version, index_path=index or "")
+                    self._model_cache[pth] = rvc
+                    self._notify(f"RVC hazir: {Path(pth).name}")
+                    return True
+                except ImportError:
+                    self._notify("HATA: rvc-python bulunamadi. pip install rvc-python")
+                    return False
+                except Exception as e:
+                    self._notify(f"RVC yukleme hatasi ({Path(pth).name}): {e}")
+                    return False
+
+            success = mgr.request_load(
+                model_id=pth,
+                load_fn=load_fn,
+                estimated_vram_mb=400.0,
+            )
+
+            if success and pth in self._model_cache:
+                return self._model_cache[pth]
+            return None
 
     def preload_all(self):
         """
@@ -272,6 +304,80 @@ class RVCConverter:
                 self._notify(f"RVC donusum hatasi: {e}")
                 return None
 
+    def convert_array(
+        self,
+        audio_data,
+        sample_rate: int,
+        character: Optional[str] = None,
+        pitch_override_delta: int = 0,
+    ) -> Optional[tuple]:
+        """
+        Numpy array girisi alip donusturulmus (sample_rate, numpy_array) doner.
+        rvc-python dosya tabanli oldugu icin gecici dosya kullanir ama
+        output/ yerine tempfile kullanarak disk I/O'yu minimize eder.
+        Basarisiz olursa None doner ve orijinal ses gecilir.
+        """
+        import numpy as np
+        import tempfile
+        import scipy.io.wavfile as wavfile
+
+        pth, index = self._resolve_model(character)
+        if not pth:
+            return None
+
+        rvc_obj = self._load_model(pth, index)
+        if rvc_obj is None:
+            return None
+
+        _, infer_lock = self._get_locks(pth)
+        effective_pitch = self.pitch + pitch_override_delta
+        f0 = self._effective_f0_method()
+
+        tmp_in = None
+        tmp_out = None
+        try:
+            # Gecici dosyalari olustur
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f_in:
+                tmp_in = f_in.name
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f_out:
+                tmp_out = f_out.name
+
+            # numpy array -> gecici WAV
+            wavfile.write(tmp_in, sample_rate, audio_data)
+
+            with infer_lock:
+                self._notify(
+                    f"RVC [{character or 'varsayilan'}] f0={f0} pitch={effective_pitch}..."
+                )
+                rvc_obj.set_params(
+                    f0up_key=effective_pitch,
+                    filter_radius=self.filter_radius,
+                    index_rate=self.index_rate,
+                    rms_mix_rate=self.rms_mix_rate,
+                    protect=self.protect,
+                    f0method=f0,
+                )
+                rvc_obj.infer_file(
+                    input_path=tmp_in,
+                    output_path=tmp_out,
+                )
+
+            # Sonucu oku
+            sr_out, data_out = wavfile.read(tmp_out)
+            return (sr_out, data_out)
+
+        except Exception as e:
+            self._notify(f"RVC array donusum hatasi: {e}")
+            return None
+        finally:
+            # Gecici dosyalari temizle
+            for tmp in (tmp_in, tmp_out):
+                if tmp:
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+
     def set_default_model(self, model_path: str, index_path: Optional[str] = None):
         """Varsayilan modeli degistirir; once VRAM'e yukler."""
         self._default_model = model_path
@@ -324,10 +430,21 @@ class RVCConverter:
     def unload_all(self):
         """Tum onbellekteki RVC modellerini bellekten kaldirir."""
         with self._meta_lock:
+            try:
+                from src.utils.vram_manager import VRAMManager
+                mgr = VRAMManager.get_instance()
+                for pth in self._model_cache:
+                    with mgr.lock:
+                        if pth in mgr.models:
+                            mgr.models[pth]["is_loaded"] = False
+            except Exception:
+                pass
             self._model_cache.clear()
             self._load_locks.clear()
             self._infer_locks.clear()
         try:
+            import gc
+            gc.collect()
             import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

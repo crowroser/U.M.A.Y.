@@ -324,7 +324,7 @@ class SubtitleMonitor:
 
     SIMILARITY_THRESHOLD = 0.90
     STABILIZE_SIMILARITY = 0.80  # 2 okuma bu oranda benzer olmalı
-    STABILIZE_REQUIRED = 2  # Kaç ardışık benzer okuma gerekli
+    STABILIZE_REQUIRED = 1  # Tek okuma yeterli (dedup zaten var)
     MIN_TEXT_LEN = 5
 
     def __init__(
