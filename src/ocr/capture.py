@@ -156,38 +156,6 @@ def _normalize_for_dedup(text: str) -> str:
     return t
 
 
-def _word_overlap_ratio(a: str, b: str) -> float:
-    """İki metnin kelime örtüşme oranı (0.0–1.0). OCR bozulmalarında yardımcı."""
-    wa = set(re.findall(r"\b[^\W\d_]{3,}\b", a.lower()))
-    wb = set(re.findall(r"\b[^\W\d_]{3,}\b", b.lower()))
-    if not wa or not wb:
-        return 0.0
-    return len(wa & wb) / max(len(wa), len(wb))
-
-
-def _is_duplicate_of_recent(dialog: str, recent: list[str]) -> bool:
-    """
-    Yeni dialog, son gonderilenlerden biriyle ayni/benzer mi?
-    - %85+ benzerlik -> tekrar
-    - %75+ kelime örtüşmesi -> tekrar (OCR bozuk varyant)
-    - Kisa parca, uzun gonderilenin on eki -> tekrar (kesik cümle)
-    """
-    d = _normalize_for_dedup(dialog)
-    if len(d) < 10:
-        return False
-    for r in recent:
-        rn = _normalize_for_dedup(r)
-        if _similarity(d, rn) >= 0.85:
-            return True
-        # Kelime örtüşmesi: aynı altyazının OCR bozuk versiyonu
-        if _word_overlap_ratio(dialog, r) >= 0.75:
-            return True
-        # Kesik cümle: dialog, daha önce gönderilen uzun metnin ön eki
-        if len(rn) > len(d) * 1.2 and (rn.startswith(d[:20]) or d[:20] in rn):
-            return True
-    return False
-
-
 def preprocess_image(img: Image.Image) -> Image.Image:
     """
     Oyun altyazilari icin akilli goruntu on islemesi.
@@ -329,8 +297,7 @@ class ScreenCapture:
 class SubtitleMonitor:
     """
     Arka planda periyodik ekran taramasi yapan uretici (producer).
-    Anti-spam: %90 benzerlik esigi, minimum 5 karakter filtresi.
-    Stabilizasyon: 2 ardışık benzer okuma gerekir (geçiş anı gürültüsünü azaltır).
+    Anti-spam: OCRCache fuzzy duplicate tespiti ve temporal filtreleme.
     """
 
     SIMILARITY_THRESHOLD = 0.90
@@ -355,8 +322,14 @@ class SubtitleMonitor:
         self._candidate_raw = ""
         self._candidate_count = 0
         self._error_count = 0
-        self._last_sent_dialogs: list[str] = []  # Son 5 gonderilen (tekrar onleme)
-        self._MAX_RECENT = 5
+        
+        from src.pipeline.ocr_cache import OCRCache
+        self._ocr_cache = OCRCache(
+            history_size=10,
+            similarity_threshold=self.SIMILARITY_THRESHOLD,
+            stale_time_sec=8.0,
+            stabilize_delay_sec=0.15,
+        )
 
     @property
     def interval(self) -> float:
@@ -373,8 +346,7 @@ class SubtitleMonitor:
         self._last_raw = ""
         self._candidate_raw = ""
         self._candidate_count = 0
-        self._last_sent_dialogs.clear()
-        self._error_count = 0
+        self._ocr_cache.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
@@ -383,6 +355,7 @@ class SubtitleMonitor:
         if self._thread:
             self._thread.join(timeout=3)
             self._thread = None
+        self._ocr_cache.clear()
 
     def _loop(self):
         while self._running:
@@ -440,7 +413,7 @@ class SubtitleMonitor:
             time.sleep(self._interval)
 
     def _process_raw(self, raw: str):
-        """Ham OCR metnini parse edip TTS'e gönderir."""
+        """Ham OCR metnini parse edip önbelleğe ve ardından TTS'e gönderir."""
         pairs = parse_subtitle(raw)
         if not pairs:
             self._on_log("[OCR] Altyazı formatı eşleşmedi, metin atlandı.", "error")
@@ -449,12 +422,20 @@ class SubtitleMonitor:
         for speaker, dialog in pairs:
             if _is_garbage_text(dialog):
                 continue
-            if _is_duplicate_of_recent(dialog, self._last_sent_dialogs):
+            
+            # OCR Önbellek fuzzy duplicate kontrolü
+            if self._ocr_cache.is_duplicate(speaker, dialog):
                 continue
-            self._on_new_subtitle(speaker, dialog)
-            self._last_sent_dialogs.append(dialog)
-            if len(self._last_sent_dialogs) > self._MAX_RECENT:
-                self._last_sent_dialogs.pop(0)
+
+            # Temporal filtreleme (stabilizasyon gecikmesi)
+            stabilized = self._ocr_cache.process_temporal(speaker, dialog)
+            if stabilized is None:
+                continue
+
+            sp_st, dia_st = stabilized
+            self._on_new_subtitle(sp_st, dia_st)
+            self._ocr_cache.add(sp_st, dia_st)
             sent += 1
+            
         if sent == 0:
             self._on_log("[OCR] Tüm parçalar gürültü olarak filtrelendi.", "error")

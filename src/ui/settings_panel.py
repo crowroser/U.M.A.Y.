@@ -387,6 +387,7 @@ class SettingsPanel(ctk.CTkFrame):
                 "enabled": self._vram_enabled.get(),
                 "auto_detect": self._vram_auto.get(),
                 "budget_mb": float(self._vram_budget.get().strip()) if self._vram_budget.get().strip() else 3000.0,
+                "device": self._vram_device.get(),
             },
             "cache": {
                 "tts_disk_enabled": self._tts_disk_enabled.get(),
@@ -502,6 +503,17 @@ class SettingsPanel(ctk.CTkFrame):
         self._vram_auto.set(vram.get("auto_detect", True))
         self._vram_budget.delete(0, "end")
         self._vram_budget.insert(0, str(vram.get("budget_mb", 3000.0)))
+        
+        # Cihaz ayarını yükle
+        device_val = vram.get("device", "cuda:0")
+        if device_val in self._vram_device.cget("values"):
+            self._vram_device.set(device_val)
+        else:
+            current_vals = list(self._vram_device.cget("values"))
+            current_vals.append(device_val)
+            self._vram_device.configure(values=current_vals)
+            self._vram_device.set(device_val)
+            
         self._toggle_vram_auto()
 
         # Cache ayarlarını yükle
@@ -535,6 +547,21 @@ class SettingsPanel(ctk.CTkFrame):
         ctk.CTkLabel(vram_frame, text="VRAM Bütçesi (MB):").pack(anchor="w", padx=4, pady=(4, 0))
         self._vram_budget = ctk.CTkEntry(vram_frame, placeholder_text="3000")
         self._vram_budget.pack(fill="x", padx=4, pady=(2, 4))
+
+        ctk.CTkLabel(vram_frame, text="Aktif Cihaz (GPU/CPU):").pack(anchor="w", padx=4, pady=(4, 0))
+        device_values = ["cpu"]
+        try:
+            import torch
+            if torch.cuda.is_available():
+                for i in range(torch.cuda.device_count()):
+                    device_values.append(f"cuda:{i}")
+            else:
+                device_values.append("cuda:0")
+        except Exception:
+            device_values.append("cuda:0")
+        self._vram_device = ctk.CTkComboBox(vram_frame, values=device_values)
+        self._vram_device.set("cuda:0")
+        self._vram_device.pack(fill="x", padx=4, pady=(2, 4))
 
         # ── Önbellek Ayarları ──
         ctk.CTkLabel(cache_frame, text="Önbellek Ayarları", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=4, pady=4)
