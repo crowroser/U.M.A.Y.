@@ -1658,7 +1658,7 @@ class UMAYApp(ctk.CTk):
                 md = generate_markdown_report(report)
                 self.after(0, lambda: self._show_bench_result(md, "OCR testi tamamlandı.", 1.0))
             except Exception as e:
-                self.after(0, lambda: self._show_bench_error(f"OCR Benchmark hatası: {e}"))
+                self.after(0, lambda e=e: self._show_bench_error(f"OCR Benchmark hatası: {e}"))
                 
         threading.Thread(target=_thread, daemon=True).start()
 
@@ -1680,7 +1680,7 @@ class UMAYApp(ctk.CTk):
                 md = generate_markdown_report(report)
                 self.after(0, lambda: self._show_bench_result(md, "TTS testi tamamlandı.", 1.0))
             except Exception as e:
-                self.after(0, lambda: self._show_bench_error(f"TTS Benchmark hatası: {e}"))
+                self.after(0, lambda e=e: self._show_bench_error(f"TTS Benchmark hatası: {e}"))
                 
         threading.Thread(target=_thread, daemon=True).start()
 
@@ -1702,7 +1702,7 @@ class UMAYApp(ctk.CTk):
                 md = generate_markdown_report(report)
                 self.after(0, lambda: self._show_bench_result(md, "RVC testi tamamlandı.", 1.0))
             except Exception as e:
-                self.after(0, lambda: self._show_bench_error(f"RVC Benchmark hatası: {e}"))
+                self.after(0, lambda e=e: self._show_bench_error(f"RVC Benchmark hatası: {e}"))
                 
         threading.Thread(target=_thread, daemon=True).start()
 
@@ -1724,7 +1724,7 @@ class UMAYApp(ctk.CTk):
                 md = generate_markdown_report(report)
                 self.after(0, lambda: self._show_bench_result(md, "Tüm testler başarıyla tamamlandı.", 1.0))
             except Exception as e:
-                self.after(0, lambda: self._show_bench_error(f"Tümünü Çalıştır hatası: {e}"))
+                self.after(0, lambda e=e: self._show_bench_error(f"Tümünü Çalıştır hatası: {e}"))
                 
         threading.Thread(target=_thread, daemon=True).start()
 
