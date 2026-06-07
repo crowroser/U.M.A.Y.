@@ -36,7 +36,7 @@ class SettingsPanel(ctk.CTkFrame):
     def _build_ocr_tab(self):
         tab = self._notebook.tab("OCR")
         ctk.CTkLabel(tab, text="OCR Motoru:").pack(anchor="w", padx=8, pady=(8, 0))
-        self._ocr_engine = ctk.CTkComboBox(tab, values=["tesseract", "easyocr", "paddleocr"])
+        self._ocr_engine = ctk.CTkComboBox(tab, values=["tesseract", "easyocr", "paddleocr", "windows_ocr"])
         self._ocr_engine.set("tesseract")
         self._ocr_engine.pack(fill="x", padx=8, pady=(0, 8))
         ctk.CTkLabel(tab, text="Tesseract Yolu:").pack(anchor="w", padx=8)

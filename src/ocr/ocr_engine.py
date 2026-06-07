@@ -156,6 +156,47 @@ class PaddleOCREngine(BaseOCREngine):
         return ""
 
 
+class WindowsOCREngine(BaseOCREngine):
+    """
+    Windows Media OCR (yerel Windows 10/11 API) motoru entegrasyonu.
+    Çok hızlıdır, kurulum gerektirmez.
+    """
+
+    def __init__(self, language: str = "tur", preprocess: bool = True):
+        super().__init__(language, preprocess)
+        self.winocr_lang = self._map_lang(self.language)
+        try:
+            import winocr
+            self.available = True
+        except ImportError:
+            self.available = False
+            logger.warning("winocr kütüphanesi yüklü değil.")
+
+    def _map_lang(self, lang: str) -> str:
+        s = lang.strip().lower()
+        if s.startswith("tr") or s == "tur":
+            return "tr"
+        if s.startswith("en") or s == "eng":
+            return "en"
+        return "tr"
+
+    def extract_text(self, image: Image.Image) -> str:
+        if not self.available:
+            return ""
+
+        if self.preprocess:
+            image = self.preprocess_image(image)
+
+        try:
+            import winocr
+            res = winocr.recognize_pil_sync(image, lang=self.winocr_lang)
+            if res and isinstance(res, dict):
+                return res.get("text", "").strip()
+        except Exception as e:
+            logger.error(f"Windows OCR okuma hatası: {e}")
+        return ""
+
+
 class OCREngineFactory:
     """
     İstenen motor tipine göre OCR nesnesi üreten fabrika sınıfı.
@@ -181,6 +222,13 @@ class OCREngineFactory:
                 return engine
             else:
                 logger.warning("PaddleOCR bulunamadı, Tesseract fallback yapılıyor.")
+                return TesseractEngine(language=language, preprocess=preprocess, tesseract_path=tesseract_path)
+        elif t == "windows_ocr":
+            engine = WindowsOCREngine(language=language, preprocess=preprocess)
+            if engine.available:
+                return engine
+            else:
+                logger.warning("Windows Media OCR (winocr) bulunamadı, Tesseract fallback yapılıyor.")
                 return TesseractEngine(language=language, preprocess=preprocess, tesseract_path=tesseract_path)
         else:
             return TesseractEngine(language=language, preprocess=preprocess, tesseract_path=tesseract_path)
