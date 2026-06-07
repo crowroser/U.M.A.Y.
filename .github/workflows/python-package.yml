@@ -37,14 +37,7 @@ jobs:
         # Solution: use pip < 24.1 which tolerates the metadata error
         python -m pip install "pip<24.1"
         pip install flake8 pytest
-        python - <<'PY'
-from pathlib import Path
-lines = [line for line in Path('requirements.txt').read_text().splitlines()
-         if line.strip() and not line.strip().startswith('rvc-python')]
-Path('requirements_no_rvc.txt').write_text('\n'.join(lines) + '\n')
-PY
-        pip install -r requirements_no_rvc.txt
-        pip install --no-deps rvc-python==0.1.5
+        pip install -r requirements.txt
     
     - name: Lint with flake8
       run: |
@@ -55,7 +48,7 @@ PY
     
     - name: Run basic import check
       run: |
-        python -c "import src.pipeline; import src.tts; import src.rvc; print('All imports successful')"
+        python -c "import src.ui.app; import src.pipeline; import src.tts; import src.rvc; print('✓ All imports successful')"
     
     - name: Run tests if available
       run: |
