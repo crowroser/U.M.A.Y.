@@ -9,8 +9,10 @@ TTS>=0.22.0
 rvc-python==0.1.5
 # Audio / Sound
 sounddevice>=0.4.6
-numpy<=1.23.5
-scipy>=1.14.0
+numpy==1.22.0 ; python_version == "3.10"
+numpy>=1.24.3 ; python_version != "3.10"
+scipy<1.13.0 ; python_version == "3.10"
+scipy>=1.14.0 ; python_version != "3.10"
 keyboard>=0.13.5
 pycaw>=20251023
 
