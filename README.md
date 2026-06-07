@@ -1,5 +1,10 @@
 # U.M.A.Y — Unified Model-based Audio Yield
 
+[![Python Package](https://github.com/crowroser/U.M.A.Y./actions/workflows/python-package.yml/badge.svg)](https://github.com/crowroser/U.M.A.Y./actions/workflows/python-package.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub stars](https://img.shields.io/github/stars/crowroser/U.M.A.Y.?style=social)](https://github.com/crowroser/U.M.A.Y.)
+
 **U.M.A.Y** is a real-time desktop application that reads on-screen subtitles from games or applications via OCR, converts the text to speech (TTS), and then transforms the voice using an RVC (Retrieval-based Voice Conversion) model. Subtitles captured from the screen in `Character: Dialogue` format are synthesized with the selected reference audio and played through the speakers.
 
 ---
