@@ -38,11 +38,11 @@ jobs:
         python -m pip install "pip<24.1"
         pip install flake8 pytest
         python - <<'PY'
-from pathlib import Path
-lines = [line for line in Path('requirements.txt').read_text().splitlines()
-         if line.strip() and not line.strip().startswith('rvc-python')]
-Path('requirements_no_rvc.txt').write_text('\n'.join(lines) + '\n')
-PY
+          from pathlib import Path
+          lines = [line for line in Path('requirements.txt').read_text().splitlines()
+                   if line.strip() and not line.strip().startswith('rvc-python')]
+          Path('requirements_no_rvc.txt').write_text('\n'.join(lines) + '\n')
+        PY
         pip install -r requirements_no_rvc.txt
         pip install --no-deps rvc-python==0.1.5
     
