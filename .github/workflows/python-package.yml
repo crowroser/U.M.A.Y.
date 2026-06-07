@@ -55,7 +55,7 @@ PY
     
     - name: Run basic import check
       run: |
-        python -c "import src.pipeline; import src.tts; import src.rvc; print('✓ All imports successful')"
+        python -c "import src.pipeline; import src.tts; import src.rvc; print('All imports successful')"
     
     - name: Run tests if available
       run: |
